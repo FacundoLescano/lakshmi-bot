@@ -107,6 +107,14 @@ def handle_message(request):
 # ── Text handler ──────────────────────────────────────────────
 
 def handle_text(from_number, text, session):
+    if text.lower() in ("finalizar conversación", "finalizar conversacion", "finalizar"):
+        clear_session(from_number)
+        send_text_message(
+            to=from_number,
+            text="Conversación finalizada. ¡Gracias por contactarte con Lakshmi!",
+        )
+        return
+
     if not session:
         send_welcome(from_number)
         return
