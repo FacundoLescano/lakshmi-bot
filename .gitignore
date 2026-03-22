@@ -5,5 +5,7 @@ db.sqlite3
 .claude/
 env/venv/
 staticfiles/
-.env
+.env/
 .env.swp
+env/
+migrations/
