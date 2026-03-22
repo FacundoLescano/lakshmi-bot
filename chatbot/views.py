@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -9,6 +10,11 @@ from django.views.decorators.http import require_http_methods
 from .whatsapp import send_interactive_buttons, send_text_message
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_ar_number(number):
+    """Convert Argentine 549xx numbers to 54xx for the API."""
+    return re.sub(r'^549(\d{10})$', r'54\1', number)
 
 
 @csrf_exempt
@@ -36,6 +42,8 @@ def handle_message(request):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
+    logger.info("Webhook POST received: %s", json.dumps(body)[:500])
+
     entry = body.get("entry", [])
     if not entry:
         return HttpResponse("OK", status=200)
@@ -50,30 +58,35 @@ def handle_message(request):
         return HttpResponse("OK", status=200)
 
     message = messages[0]
-    from_number = message["from"]
+    from_number = normalize_ar_number(message["from"])
     msg_type = message.get("type")
 
-    if msg_type == "text":
-        send_interactive_buttons(
-            to=from_number,
-            body_text=(
-                "Hola, gracias por contactarte con Lakshmi, "
-                "hacemos todo tipo de masajes"
-            ),
-            buttons=[
-                {"id": "btn_reserva", "title": "Reserva"},
-                {"id": "btn_info", "title": "Más información"},
-            ],
-        )
+    logger.info("Message from %s, type: %s", from_number, msg_type)
 
-    elif msg_type == "interactive":
-        interactive = message.get("interactive", {})
-        button_reply = interactive.get("button_reply", {})
-        button_id = button_reply.get("id", "")
+    try:
+        if msg_type == "text":
+            send_interactive_buttons(
+                to=from_number,
+                body_text=(
+                    "Hola, gracias por contactarte con Lakshmi, "
+                    "hacemos todo tipo de masajes"
+                ),
+                buttons=[
+                    {"id": "btn_reserva", "title": "Reserva"},
+                    {"id": "btn_info", "title": "Más información"},
+                ],
+            )
 
-        if button_id == "btn_reserva":
-            send_text_message(to=from_number, text="Reserva")
-        elif button_id == "btn_info":
-            send_text_message(to=from_number, text="Más información")
+        elif msg_type == "interactive":
+            interactive = message.get("interactive", {})
+            button_reply = interactive.get("button_reply", {})
+            button_id = button_reply.get("id", "")
+
+            if button_id == "btn_reserva":
+                send_text_message(to=from_number, text="Reserva")
+            elif button_id == "btn_info":
+                send_text_message(to=from_number, text="Más información")
+    except Exception as e:
+        logger.error("Error sending WhatsApp message: %s", str(e))
 
     return HttpResponse("OK", status=200)
