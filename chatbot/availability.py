@@ -1,8 +1,9 @@
+import logging
 from datetime import timedelta
 
 from .models import Reserva
 
-MASSAGE_DURATION = timedelta(hours=1)
+logger = logging.getLogger(__name__)
 
 OPENING_HOUR = 9
 CLOSING_HOUR = 21
@@ -15,9 +16,15 @@ PRICES = {
 
 
 def is_available(dt):
-    if dt.hour < OPENING_HOUR or dt.hour >= CLOSING_HOUR:
+    outside_hours = dt.hour < OPENING_HOUR or dt.hour >= CLOSING_HOUR
+    has_reserva = Reserva.objects.filter(horario=dt).exists()
+    logger.info(
+        "is_available(%s) -> hour=%s, outside_hours=%s, has_reserva=%s",
+        dt, dt.hour, outside_hours, has_reserva,
+    )
+    if outside_hours:
         return False
-    return not Reserva.objects.filter(horario=dt).exists()
+    return not has_reserva
 
 
 def suggest_alternatives(dt):

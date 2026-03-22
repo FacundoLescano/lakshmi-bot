@@ -164,6 +164,7 @@ def handle_horario(from_number, text, session):
         return
 
     parsed = parsed.replace(minute=0, second=0, microsecond=0)
+    logger.info("Parsed datetime: %s (hour=%s, tzinfo=%s)", parsed, parsed.hour, parsed.tzinfo)
 
     if is_available(parsed):
         session["horario"] = parsed.isoformat()
