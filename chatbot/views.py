@@ -29,8 +29,10 @@ MASAJE_ID_TO_DB = {
 
 DATEPARSER_SETTINGS = {
     "PREFER_DATES_FROM": "future",
+    "PREFER_DAY_OF_MONTH": "first",
     "TIMEZONE": "America/Argentina/Buenos_Aires",
     "RETURN_AS_TIMEZONE_AWARE": True,
+    "RELATIVE_BASE": None,  # set dynamically
 }
 
 
@@ -153,8 +155,37 @@ def handle_nombre(from_number, text, session):
     )
 
 
+def parse_horario(text):
+    """Parse user input like 'martes a las 9', 'mañana 15hs', etc."""
+    import re as _re
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    # Normalize: "a las 9" → "a las 9:00", "15hs" → "15:00"
+    normalized = _re.sub(r'(\d{1,2})\s*hs?\b', r'\1:00', text)
+    normalized = _re.sub(r'a las (\d{1,2})\b(?!:)', r'a las \1:00', normalized)
+
+    now_ar = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires"))
+    settings = {
+        **DATEPARSER_SETTINGS,
+        "RELATIVE_BASE": now_ar.replace(tzinfo=None),
+    }
+
+    parsed = dateparser.parse(normalized, languages=["es"], settings=settings)
+
+    if parsed and parsed.hour == 0 and parsed.minute == 0:
+        # dateparser ignored the time, try extracting it manually
+        match = _re.search(r'(\d{1,2})(?::(\d{2}))?\s*(?:hs?)?', text)
+        if match:
+            hour = int(match.group(1))
+            if 0 < hour <= 23:
+                parsed = parsed.replace(hour=hour)
+
+    return parsed
+
+
 def handle_horario(from_number, text, session):
-    parsed = dateparser.parse(text, languages=["es"], settings=DATEPARSER_SETTINGS)
+    parsed = parse_horario(text)
 
     if not parsed:
         send_text_message(
