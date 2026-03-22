@@ -17,12 +17,7 @@ PRICES = {
 def is_available(dt):
     if dt.hour < OPENING_HOUR or dt.hour >= CLOSING_HOUR:
         return False
-    end = dt + MASSAGE_DURATION
-    conflicts = Reserva.objects.filter(
-        horario__lt=end,
-        horario__gte=dt - MASSAGE_DURATION + timedelta(minutes=1),
-    )
-    return not conflicts.exists()
+    return not Reserva.objects.filter(horario=dt).exists()
 
 
 def suggest_alternatives(dt):
