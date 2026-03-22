@@ -98,8 +98,8 @@ def handle_message(request):
             text = message.get("text", {}).get("body", "").strip()
             handle_text(from_number, text, session)
 
-    except Exception as e:
-        logger.error("Error sending WhatsApp message: %s", str(e))
+    except Exception:
+        logger.exception("Error processing message from %s", from_number)
 
     return HttpResponse("OK", status=200)
 
@@ -193,6 +193,8 @@ def handle_horario(from_number, text, session):
 # ── Button handler ────────────────────────────────────────────
 
 def handle_button(from_number, button_id, session):
+    logger.info("Button pressed: %s, session: %s", button_id, session)
+
     # Main menu
     if button_id == "btn_reserva":
         set_session(from_number, {"step": "awaiting_pareja"})
@@ -211,6 +213,12 @@ def handle_button(from_number, button_id, session):
         return
 
     if not session:
+        logger.warning("Session lost for %s, restarting flow", from_number)
+        send_text_message(
+            to=from_number,
+            text="Se perdió la sesión. Empecemos de nuevo.",
+        )
+        send_welcome(from_number)
         return
 
     step = session.get("step")

@@ -1,16 +1,20 @@
-# In-memory conversation state (will be replaced with MySQL later)
-# Key: phone number, Value: dict with step and collected data
+from django.core.cache import cache
 
-_sessions = {}
+SESSION_PREFIX = "wa_session_"
+SESSION_TIMEOUT = 60 * 60  # 1 hour
+
+
+def _key(phone):
+    return f"{SESSION_PREFIX}{phone}"
 
 
 def get_session(phone):
-    return _sessions.get(phone)
+    return cache.get(_key(phone))
 
 
 def set_session(phone, data):
-    _sessions[phone] = data
+    cache.set(_key(phone), data, SESSION_TIMEOUT)
 
 
 def clear_session(phone):
-    _sessions.pop(phone, None)
+    cache.delete(_key(phone))
