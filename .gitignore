@@ -9,3 +9,4 @@ staticfiles/
 .env.swp
 env/
 migrations/
+API.md

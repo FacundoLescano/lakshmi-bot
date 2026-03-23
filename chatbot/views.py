@@ -9,7 +9,13 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .availability import PRICES, is_available, suggest_alternatives
+from .availability import (
+    PRICES,
+    assign_camilla,
+    get_free_camillas,
+    is_available,
+    suggest_alternatives,
+)
 from .conversation import clear_session, get_session, set_session
 from .models import Reserva
 from .whatsapp import send_interactive_buttons, send_text_message
@@ -216,7 +222,11 @@ def handle_horario(from_number, text, session):
     parsed = parsed.replace(minute=0, second=0, microsecond=0)
     logger.info("Parsed datetime: %s (hour=%s, tzinfo=%s)", parsed, parsed.hour, parsed.tzinfo)
 
-    if is_available(parsed):
+    needed = 2 if session.get("pareja") else 1
+    free_count = len(get_free_camillas(parsed))
+    has_availability = is_available(parsed) and free_count >= needed
+
+    if has_availability:
         session["horario"] = parsed.isoformat()
         session["step"] = "awaiting_confirm"
         set_session(from_number, session)
@@ -398,12 +408,30 @@ def save_reserva(from_number, session):
     adelanto = precio // 2
 
     count = 2 if es_pareja else 1
-    for _ in range(count):
+
+    try:
+        camillas = assign_camilla(horario, count=count)
+    except ValueError:
+        logger.warning("No camillas available at %s for %s", horario, from_number)
+        send_text_message(
+            to=from_number,
+            text=(
+                "Lo sentimos, ya no quedan camillas disponibles para ese horario. "
+                "Por favor elegí otro horario."
+            ),
+        )
+        session["step"] = "awaiting_horario"
+        set_session(from_number, session)
+        return
+
+    for sucursal, camilla in camillas:
         Reserva.objects.create(
             nombre=session["nombre"],
             es_pareja=es_pareja,
             tipo_masaje=masaje_db_key,
             horario=horario,
+            sucursal=sucursal,
+            camilla=camilla,
         )
 
     send_text_message(
