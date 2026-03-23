@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import threading
 
 import dateparser
 from django.http import HttpResponse, JsonResponse
@@ -87,7 +88,20 @@ def handle_message(request):
 
     logger.info("Message from %s, type: %s", from_number, msg_type)
 
+    threading.Thread(
+        target=process_message,
+        args=(from_number, msg_type, message),
+        daemon=True,
+    ).start()
+
+    return HttpResponse("OK", status=200)
+
+
+def process_message(from_number, msg_type, message):
     try:
+        from django.db import close_old_connections
+        close_old_connections()
+
         session = get_session(from_number)
 
         if msg_type == "interactive":
@@ -102,8 +116,9 @@ def handle_message(request):
 
     except Exception:
         logger.exception("Error processing message from %s", from_number)
-
-    return HttpResponse("OK", status=200)
+    finally:
+        from django.db import close_old_connections
+        close_old_connections()
 
 
 # ── Text handler ──────────────────────────────────────────────
@@ -180,6 +195,10 @@ def parse_horario(text):
             hour = int(match.group(1))
             if 0 < hour <= 23:
                 parsed = parsed.replace(hour=hour)
+
+    # Strip timezone so Django stores the Argentina local time directly
+    if parsed and parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
 
     return parsed
 
