@@ -9,33 +9,27 @@ logger = logging.getLogger(__name__)
 OPENING_HOUR = 9
 CLOSING_HOUR = 21
 
-# Total camillas across all branches
 TOTAL_CAMILLAS = len(ALL_CAMILLAS)
 
 PRICES = {
-    "relajante": 15000,
-    "descontracturante": 18000,
-    "piedras_calientes": 22000,
+    60: 50000,
+    90: 65000,
+    120: 80000,
 }
 
 
 def get_occupied_camillas(dt):
-    """Return set of (sucursal, camilla) occupied at datetime dt."""
     reservas = Reserva.objects.filter(horario=dt).values_list("sucursal", "camilla")
     return set(reservas)
 
 
 def get_free_camillas(dt):
-    """Return list of (sucursal, camilla) available at datetime dt."""
     occupied = get_occupied_camillas(dt)
     return [c for c in ALL_CAMILLAS if c not in occupied]
 
 
 def is_available(dt):
-    """Check if there's at least one free camilla at dt."""
-    outside_hours = dt.hour < OPENING_HOUR or dt.hour >= CLOSING_HOUR
-
-    if outside_hours:
+    if dt.hour < OPENING_HOUR or dt.hour >= CLOSING_HOUR:
         logger.info("is_available(%s) -> hour=%s, outside business hours", dt, dt.hour)
         return False
 
@@ -48,10 +42,6 @@ def is_available(dt):
 
 
 def get_consecutive_pairs(dt):
-    """
-    Return available consecutive camilla pairs for pareja bookings.
-    Each pair is ((sucursal, cam_n), (sucursal, cam_n+1)).
-    """
     free = set(get_free_camillas(dt))
     pairs = []
     for suc_id, _ in SUCURSALES:
@@ -63,29 +53,18 @@ def get_consecutive_pairs(dt):
     return pairs
 
 
-def assign_camilla(dt, count=1, pareja=False):
-    """
-    Assign camillas for datetime dt.
-    - pareja=True: picks a random consecutive pair in the same sucursal.
-    - pareja=False: picks `count` random free camillas.
-    Returns list of (sucursal, camilla) tuples.
-    Raises ValueError if not enough camillas available.
-    """
+def assign_camilla(dt, pareja=False):
     if pareja:
         pairs = get_consecutive_pairs(dt)
         if not pairs:
-            raise ValueError(
-                f"No consecutive camilla pairs available at {dt}"
-            )
+            raise ValueError(f"No consecutive camilla pairs available at {dt}")
         pair = random.choice(pairs)
         return list(pair)
 
     free = get_free_camillas(dt)
-    if len(free) < count:
-        raise ValueError(
-            f"Not enough camillas: need {count}, only {len(free)} free at {dt}"
-        )
-    return random.sample(free, count)
+    if not free:
+        raise ValueError(f"No camillas free at {dt}")
+    return [random.choice(free)]
 
 
 def suggest_alternatives(dt, pareja=False):

@@ -18,21 +18,21 @@ from .availability import (
     suggest_alternatives,
 )
 from .conversation import clear_session, get_session, set_session
-from .models import Reserva
+from .models import Memoria, Reserva, generate_voucher_code
 from .whatsapp import send_interactive_buttons, send_text_message
 
 logger = logging.getLogger(__name__)
 
-MASSAGE_TYPES = [
-    {"id": "masaje_relajante", "title": "Relajante"},
-    {"id": "masaje_descontracturante", "title": "Descontracturante"},
-    {"id": "masaje_piedras", "title": "Piedras calientes"},
+DURACION_BUTTONS = [
+    {"id": "dur_60", "title": "60 minutos"},
+    {"id": "dur_90", "title": "90 minutos"},
+    {"id": "dur_120", "title": "120 minutos"},
 ]
 
-MASAJE_ID_TO_DB = {
-    "masaje_relajante": "relajante",
-    "masaje_descontracturante": "descontracturante",
-    "masaje_piedras": "piedras_calientes",
+DURACION_MAP = {
+    "dur_60": 60,
+    "dur_90": 90,
+    "dur_120": 120,
 }
 
 DATEPARSER_SETTINGS = {
@@ -40,14 +40,15 @@ DATEPARSER_SETTINGS = {
     "PREFER_DAY_OF_MONTH": "first",
     "TIMEZONE": "America/Argentina/Buenos_Aires",
     "RETURN_AS_TIMEZONE_AWARE": True,
-    "RELATIVE_BASE": None,  # set dynamically
+    "RELATIVE_BASE": None,
 }
 
 
 def normalize_ar_number(number):
-    """Convert Argentine 549xx numbers to 54xx for the API."""
     return re.sub(r'^549(\d{10})$', r'54\1', number)
 
+
+# ── Webhook entry point ──────────────────────────────────────
 
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
@@ -121,6 +122,9 @@ def process_message(from_number, msg_type, message):
             text = message.get("text", {}).get("body", "").strip()
             handle_text(from_number, text, session)
 
+        elif msg_type in ("image", "document"):
+            handle_file(from_number, session)
+
     except Exception:
         logger.exception("Error processing message from %s", from_number)
     finally:
@@ -128,7 +132,7 @@ def process_message(from_number, msg_type, message):
         close_old_connections()
 
 
-# ── Text handler ──────────────────────────────────────────────
+# ── Text handler ─────────────────────────────────────────────
 
 def handle_text(from_number, text, session):
     if text.lower() in ("finalizar conversación", "finalizar conversacion", "finalizar"):
@@ -149,6 +153,10 @@ def handle_text(from_number, text, session):
         handle_nombre(from_number, text, session)
     elif step == "awaiting_horario":
         handle_horario(from_number, text, session)
+    elif step == "awaiting_voucher_code":
+        handle_voucher_code(from_number, text, session)
+    elif step == "awaiting_intencion":
+        handle_intencion(from_number, text, session)
     else:
         reprompt(from_number, session)
 
@@ -162,28 +170,92 @@ def handle_nombre(from_number, text, session):
         return
 
     session["nombre"] = text
-    session["step"] = "awaiting_horario"
-    set_session(from_number, session)
+
+    if session.get("es_regalo"):
+        # Gift flow: after name, show payment info
+        session["step"] = "awaiting_comprobante"
+        set_session(from_number, session)
+        send_payment_info(from_number, session)
+    elif session.get("horario"):
+        # Normal flow: horario already set, go to confirmation
+        from datetime import datetime
+        parsed = datetime.fromisoformat(session["horario"])
+        session["step"] = "awaiting_confirm"
+        set_session(from_number, session)
+        ask_confirmation(from_number, session, parsed)
+    else:
+        # Shouldn't happen, but fallback to ask horario
+        session["step"] = "awaiting_horario"
+        set_session(from_number, session)
+        send_text_message(
+            to=from_number,
+            text=(
+                "¿Para qué día y horario querés la cita?\n\n"
+                "Podés escribir, por ejemplo:\n"
+                "• hoy a las 15\n"
+                "• mañana a las 10\n"
+                "• viernes a las 18"
+            ),
+        )
+
+
+# ── File handler (comprobante) ───────────────────────────────
+
+def handle_file(from_number, session):
+    if not session:
+        send_welcome(from_number)
+        return
+
+    step = session.get("step")
+
+    if step == "awaiting_comprobante":
+        handle_comprobante_received(from_number, session)
+    else:
+        reprompt(from_number, session)
+
+
+def handle_comprobante_received(from_number, session):
+    es_pareja = session.get("pareja", False)
+    duracion = session.get("duracion", 60)
+    voucher_code = generate_voucher_code()
+
+    count = 2 if es_pareja else 1
+    for _ in range(count):
+        Reserva.objects.create(
+            nombre=session["nombre"],
+            es_pareja=es_pareja,
+            duracion=duracion,
+            horario=None,
+            sucursal="",
+            camilla=None,
+            voucher=generate_voucher_code() if _ > 0 else voucher_code,
+            es_regalo=True,
+            telefono=from_number,
+        )
 
     send_text_message(
         to=from_number,
         text=(
-            "¿Para qué día y horario querés la cita?\n\n"
-            "Podés escribir, por ejemplo:\n"
-            "• hoy a las 15\n"
-            "• mañana a las 10\n"
-            "• viernes a las 18"
+            f"🎁 *Voucher de regalo*\n\n"
+            f"¡Comprobante recibido! Tu voucher está listo.\n\n"
+            f"🎫 Código: *{voucher_code}*\n"
+            f"💆 Duración: {duracion} minutos\n"
+            f"👥 {'Pareja' if es_pareja else 'Individual'}\n\n"
+            f"La persona que reciba el regalo puede canjearlo "
+            f"escribiéndonos y seleccionando 'Tengo un voucher'.\n\n"
+            f"¡Gracias por elegir Lakshmi!"
         ),
     )
+    clear_session(from_number)
 
+
+# ── Horario parsing & handling ───────────────────────────────
 
 def parse_horario(text):
-    """Parse user input like 'martes a las 9', 'mañana 15hs', etc."""
     import re as _re
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    # Normalize: "a las 9" → "a las 9:00", "15hs" → "15:00"
     normalized = _re.sub(r'(\d{1,2})\s*hs?\b', r'\1:00', text)
     normalized = _re.sub(r'a las (\d{1,2})\b(?!:)', r'a las \1:00', normalized)
 
@@ -196,14 +268,12 @@ def parse_horario(text):
     parsed = dateparser.parse(normalized, languages=["es"], settings=settings)
 
     if parsed and parsed.hour == 0 and parsed.minute == 0:
-        # dateparser ignored the time, try extracting it manually
         match = _re.search(r'(\d{1,2})(?::(\d{2}))?\s*(?:hs?)?', text)
         if match:
             hour = int(match.group(1))
             if 0 < hour <= 23:
                 parsed = parsed.replace(hour=hour)
 
-    # Strip timezone so Django stores the Argentina local time directly
     if parsed and parsed.tzinfo is not None:
         parsed = parsed.replace(tzinfo=None)
 
@@ -232,9 +302,19 @@ def handle_horario(from_number, text, session):
 
     if has_availability:
         session["horario"] = parsed.isoformat()
-        session["step"] = "awaiting_confirm"
-        set_session(from_number, session)
-        ask_confirmation(from_number, session, parsed)
+        # Voucher flow goes straight to confirm (name already provided)
+        if session.get("flow") == "voucher":
+            session["step"] = "awaiting_confirm"
+            set_session(from_number, session)
+            ask_confirmation(from_number, session, parsed)
+        else:
+            # Normal reservation: ask name next
+            session["step"] = "awaiting_nombre"
+            set_session(from_number, session)
+            send_text_message(
+                to=from_number,
+                text="Por favor enviá tu nombre y apellido. Ejemplo: Juan Pérez",
+            )
     else:
         alternatives = suggest_alternatives(parsed, pareja=es_pareja)
         if alternatives:
@@ -263,14 +343,74 @@ def handle_horario(from_number, text, session):
             )
 
 
-# ── Button handler ────────────────────────────────────────────
+# ── Voucher redemption ───────────────────────────────────────
+
+def handle_voucher_code(from_number, text, session):
+    code = text.strip().upper()
+    try:
+        reserva = Reserva.objects.get(voucher=code, horario__isnull=True)
+    except Reserva.DoesNotExist:
+        send_text_message(
+            to=from_number,
+            text="No encontramos ese código de voucher o ya fue utilizado. Verificá e intentá de nuevo.",
+        )
+        return
+
+    session["flow"] = "voucher"
+    session["voucher_code"] = code
+    session["reserva_id"] = reserva.id
+    session["pareja"] = reserva.es_pareja
+    session["duracion"] = reserva.duracion
+    session["nombre"] = reserva.nombre
+    session["step"] = "awaiting_horario"
+    set_session(from_number, session)
+
+    send_text_message(
+        to=from_number,
+        text=(
+            f"✅ Voucher válido: {reserva.duracion} minutos, "
+            f"{'pareja' if reserva.es_pareja else 'individual'}.\n\n"
+            f"¿Para qué día y horario querés la cita?\n\n"
+            f"Podés escribir, por ejemplo:\n"
+            f"• hoy a las 15\n"
+            f"• mañana a las 10\n"
+            f"• viernes a las 18"
+        ),
+    )
+
+
+# ── Intencion handler ───────────────────────────────────────
+
+def handle_intencion(from_number, text, session):
+    if text:
+        Memoria.objects.create(
+            id_user=from_number,
+            context=text[:200],
+        )
+        send_text_message(
+            to=from_number,
+            text=(
+                "🧘 ¡Gracias por compartir! Vamos a personalizar tu experiencia "
+                "con aceites especiales para vos.\n\n"
+                "¡Te esperamos en Lakshmi!"
+            ),
+        )
+    else:
+        send_text_message(
+            to=from_number,
+            text="¡Te esperamos en Lakshmi!",
+        )
+    clear_session(from_number)
+
+
+# ── Button handler ───────────────────────────────────────────
 
 def handle_button(from_number, button_id, session):
     logger.info("Button pressed: %s, session: %s", button_id, session)
 
-    # Main menu
+    # ── Main menu buttons (no session needed) ──
     if button_id == "btn_reserva":
-        set_session(from_number, {"step": "awaiting_pareja"})
+        set_session(from_number, {"step": "awaiting_pareja", "flow": "reserva"})
         send_interactive_buttons(
             to=from_number,
             body_text="¿La reserva es para pareja?",
@@ -281,16 +421,32 @@ def handle_button(from_number, button_id, session):
         )
         return
 
-    if button_id == "btn_info":
-        send_text_message(to=from_number, text="Más información")
-        return
-
-    if not session:
-        logger.warning("Session lost for %s, restarting flow", from_number)
+    if button_id == "btn_cambiar":
         send_text_message(
             to=from_number,
-            text="Se perdió la sesión. Empecemos de nuevo.",
+            text="Para cambiar el horario de tu reserva, contactanos directamente.",
         )
+        return
+
+    if button_id == "btn_voucher":
+        set_session(from_number, {"step": "awaiting_voucher_code", "flow": "voucher"})
+        send_text_message(
+            to=from_number,
+            text="Por favor enviá el código de tu voucher.",
+        )
+        return
+
+    if button_id == "btn_intencionate":
+        send_text_message(
+            to=from_number,
+            text="Para adquirir INTENCIONATE, contactanos directamente.",
+        )
+        return
+
+    # ── Session-dependent buttons ──
+    if not session:
+        logger.warning("Session lost for %s, restarting flow", from_number)
+        send_text_message(to=from_number, text="Se perdió la sesión. Empecemos de nuevo.")
         send_welcome(from_number)
         return
 
@@ -299,28 +455,58 @@ def handle_button(from_number, button_id, session):
     # Pareja
     if step == "awaiting_pareja" and button_id in ("pareja_si", "pareja_no"):
         session["pareja"] = button_id == "pareja_si"
-        session["step"] = "awaiting_masaje"
+        session["step"] = "awaiting_duracion"
         set_session(from_number, session)
         send_interactive_buttons(
             to=from_number,
-            body_text="¿Qué tipo de masaje te gustaría?",
-            buttons=MASSAGE_TYPES,
+            body_text="¿Qué duración de masaje preferís?",
+            buttons=DURACION_BUTTONS,
         )
         return
 
-    # Masaje
-    if step == "awaiting_masaje" and button_id.startswith("masaje_"):
-        session["masaje_id"] = button_id
-        session["masaje_name"] = next(
-            (m["title"] for m in MASSAGE_TYPES if m["id"] == button_id),
-            button_id,
-        )
-        session["step"] = "awaiting_nombre"
+    # Duracion
+    if step == "awaiting_duracion" and button_id in DURACION_MAP:
+        duracion = DURACION_MAP[button_id]
+        session["duracion"] = duracion
+        session["step"] = "awaiting_regalo"
         set_session(from_number, session)
-        send_text_message(
+        send_interactive_buttons(
             to=from_number,
-            text="Por favor enviá tu nombre y apellido. Ejemplo: Juan Pérez",
+            body_text="¿Es para regalar?",
+            buttons=[
+                {"id": "regalo_si", "title": "Sí, para regalar"},
+                {"id": "regalo_no", "title": "No, es para mí"},
+            ],
         )
+        return
+
+    # Regalo
+    if step == "awaiting_regalo" and button_id in ("regalo_si", "regalo_no"):
+        es_regalo = button_id == "regalo_si"
+        session["es_regalo"] = es_regalo
+
+        if es_regalo:
+            # Gift: ask name, then payment, then voucher
+            session["step"] = "awaiting_nombre"
+            set_session(from_number, session)
+            send_text_message(
+                to=from_number,
+                text="Por favor enviá el nombre y apellido de quien recibe el regalo. Ejemplo: Juan Pérez",
+            )
+        else:
+            # Normal: ask horario first, then name
+            session["step"] = "awaiting_horario"
+            set_session(from_number, session)
+            send_text_message(
+                to=from_number,
+                text=(
+                    "¿Para qué día y horario querés la cita?\n\n"
+                    "Podés escribir, por ejemplo:\n"
+                    "• hoy a las 15\n"
+                    "• mañana a las 10\n"
+                    "• viernes a las 18"
+                ),
+            )
         return
 
     # Alternativas de horario
@@ -337,14 +523,22 @@ def handle_button(from_number, button_id, session):
         alt_index = int(button_id.replace("alt_", ""))
         alternatives = session.get("alternatives", [])
         if alt_index < len(alternatives):
+            from datetime import datetime
             chosen = alternatives[alt_index]
             session["horario"] = chosen
-            session["step"] = "awaiting_confirm"
-            set_session(from_number, session)
-
-            from datetime import datetime
             parsed = datetime.fromisoformat(chosen)
-            ask_confirmation(from_number, session, parsed)
+
+            if session.get("flow") == "voucher":
+                session["step"] = "awaiting_confirm"
+                set_session(from_number, session)
+                ask_confirmation(from_number, session, parsed)
+            else:
+                session["step"] = "awaiting_nombre"
+                set_session(from_number, session)
+                send_text_message(
+                    to=from_number,
+                    text="Por favor enviá tu nombre y apellido. Ejemplo: Juan Pérez",
+                )
         return
 
     # Confirmar reserva
@@ -361,35 +555,89 @@ def handle_button(from_number, button_id, session):
             )
             return
 
+    # Intencionar masaje
+    if step == "awaiting_intencionar":
+        if button_id == "intencionar_si":
+            session["step"] = "awaiting_intencion"
+            set_session(from_number, session)
+            send_text_message(
+                to=from_number,
+                text=(
+                    "Contanos brevemente cuál es tu situación actual "
+                    "o por qué necesitás el masaje. Esto nos ayuda a "
+                    "personalizar los aceites para tu sesión."
+                ),
+            )
+            return
+        if button_id == "intencionar_no":
+            send_text_message(
+                to=from_number,
+                text="¡Perfecto! Te esperamos en Lakshmi. 💆",
+            )
+            clear_session(from_number)
+            return
 
-# ── Helpers ───────────────────────────────────────────────────
+
+# ── Helpers ──────────────────────────────────────────────────
 
 def send_welcome(from_number):
     send_interactive_buttons(
         to=from_number,
         body_text=(
-            "Hola, gracias por contactarte con Lakshmi, "
-            "hacemos todo tipo de masajes"
+            "Muchas gracias por tu interés!\n"
+            "Lakshmi 💆🏼 es una gran experiencia para regalar y regalarte.\n"
+            "Te compartimos nuestro menú de propuestas para disfrutar:\n\n"
+            "💆🏻‍♀️ Masaje Relajante y Descontracturante de 60 minutos $50.000\n"
+            "🦶 + Reflexología de Pies, 90 minutos de Masaje $65.000\n"
+            "💆🏼 Masaje Full (todo lo anterior + piedras calientes) 120 minutos $80.000\n\n"
+            "➡️ Los precios son por persona.\n"
+            "➡️ Aceptamos todas las formas de pago.\n"
+            "➡️ Abiertos todos los días, hasta las 22 hs."
         ),
         buttons=[
-            {"id": "btn_reserva", "title": "Reserva"},
-            {"id": "btn_info", "title": "Más información"},
+            {"id": "btn_reserva", "title": "Reservar"},
+            {"id": "btn_voucher", "title": "Tengo un voucher"},
+            {"id": "btn_cambiar", "title": "Cambiar horario"},
         ],
     )
 
 
+def get_price(session):
+    duracion = session.get("duracion", 60)
+    precio = PRICES.get(duracion, 50000)
+    if session.get("pareja"):
+        precio *= 2
+    return precio
+
+
+def send_payment_info(from_number, session):
+    precio = get_price(session)
+    adelanto = precio // 2
+    send_text_message(
+        to=from_number,
+        text=(
+            f"💰 El precio total es ${precio:,}\n"
+            f"💳 Adelanto (50%): ${adelanto:,}\n\n"
+            f"Realizá la transferencia al siguiente CBU:\n\n"
+            f"🏦 CBU: 0000000000000000000000\n"
+            f"👤 Titular: Lakshmi Masajes\n\n"
+            f"Envianos el comprobante de transferencia por este mismo chat."
+        ),
+    )
+
+
 def ask_confirmation(from_number, session, dt):
-    masaje_db_key = MASAJE_ID_TO_DB.get(session["masaje_id"], "relajante")
-    precio = PRICES.get(masaje_db_key, 0)
+    precio = get_price(session)
     adelanto = precio // 2
     pareja_text = "para pareja" if session.get("pareja") else "individual"
+    duracion = session.get("duracion", 60)
 
     send_interactive_buttons(
         to=from_number,
         body_text=(
             f"Resumen de tu reserva:\n\n"
             f"👤 {session['nombre']}\n"
-            f"💆 {session['masaje_name']} ({pareja_text})\n"
+            f"💆 {duracion} minutos ({pareja_text})\n"
             f"📅 {dt.strftime('%A %d/%m a las %H:%Mhs')}\n"
             f"💰 Precio: ${precio:,}\n"
             f"💳 Adelanto (50%): ${adelanto:,}\n\n"
@@ -405,14 +653,14 @@ def ask_confirmation(from_number, session, dt):
 def save_reserva(from_number, session):
     from datetime import datetime
 
-    masaje_db_key = MASAJE_ID_TO_DB.get(session["masaje_id"], "relajante")
     horario = datetime.fromisoformat(session["horario"])
     es_pareja = session.get("pareja", False)
-    precio = PRICES.get(masaje_db_key, 0)
+    duracion = session.get("duracion", 60)
+    precio = get_price(session)
     adelanto = precio // 2
 
     try:
-        camillas = assign_camilla(horario, count=1, pareja=es_pareja)
+        camillas = assign_camilla(horario, pareja=es_pareja)
     except ValueError:
         logger.warning("No camillas available at %s for %s", horario, from_number)
         send_text_message(
@@ -426,28 +674,76 @@ def save_reserva(from_number, session):
         set_session(from_number, session)
         return
 
-    for sucursal, camilla in camillas:
-        Reserva.objects.create(
-            nombre=session["nombre"],
-            es_pareja=es_pareja,
-            tipo_masaje=masaje_db_key,
-            horario=horario,
-            sucursal=sucursal,
-            camilla=camilla,
+    flow = session.get("flow")
+
+    if flow == "voucher":
+        # Update existing voucher reserva with horario and camilla
+        reserva = Reserva.objects.get(id=session["reserva_id"])
+        suc, cam = camillas[0]
+        reserva.horario = horario
+        reserva.sucursal = suc
+        reserva.camilla = cam
+        reserva.save()
+
+        send_text_message(
+            to=from_number,
+            text=(
+                f"✅ ¡Voucher canjeado exitosamente!\n\n"
+                f"📅 {horario.strftime('%A %d/%m a las %H:%Mhs')}\n"
+                f"💆 {duracion} minutos\n\n"
+                f"¡Te esperamos en Lakshmi!"
+            ),
+        )
+        # Offer intencionar
+        session["step"] = "awaiting_intencionar"
+        set_session(from_number, session)
+        ask_intencionar(from_number)
+
+    else:
+        # Normal reservation
+        for sucursal, camilla in camillas:
+            Reserva.objects.create(
+                nombre=session["nombre"],
+                es_pareja=es_pareja,
+                duracion=duracion,
+                horario=horario,
+                sucursal=sucursal,
+                camilla=camilla,
+                es_regalo=False,
+                telefono=from_number,
+            )
+
+        send_text_message(
+            to=from_number,
+            text=(
+                f"✅ ¡Reserva confirmada!\n\n"
+                f"Para completar tu reserva, realizá una transferencia de ${adelanto:,} "
+                f"al siguiente CBU:\n\n"
+                f"🏦 CBU: 0000000000000000000000\n"
+                f"👤 Titular: Lakshmi Masajes\n\n"
+                f"Envianos el comprobante por este mismo chat. ¡Te esperamos!"
+            ),
         )
 
-    send_text_message(
+        # Offer intencionar
+        session["step"] = "awaiting_intencionar"
+        set_session(from_number, session)
+        ask_intencionar(from_number)
+
+
+def ask_intencionar(from_number):
+    send_interactive_buttons(
         to=from_number,
-        text=(
-            f"✅ ¡Reserva confirmada!\n\n"
-            f"Para completar tu reserva, realizá una transferencia de ${adelanto:,} "
-            f"al siguiente CBU:\n\n"
-            f"🏦 CBU: 0000000000000000000000\n"
-            f"👤 Titular: Lakshmi Masajes\n\n"
-            f"Envianos el comprobante por este mismo chat. ¡Te esperamos!"
+        body_text=(
+            "🧘 ¿Querés intencionar tu masaje?\n\n"
+            "Contanos tu situación actual o por qué necesitás el masaje. "
+            "Esto nos permite personalizar los aceites para tu sesión."
         ),
+        buttons=[
+            {"id": "intencionar_si", "title": "Sí, quiero"},
+            {"id": "intencionar_no", "title": "No, gracias"},
+        ],
     )
-    clear_session(from_number)
 
 
 def reprompt(from_number, session):
@@ -461,11 +757,20 @@ def reprompt(from_number, session):
                 {"id": "pareja_no", "title": "No, individual"},
             ],
         )
-    elif step == "awaiting_masaje":
+    elif step == "awaiting_duracion":
         send_interactive_buttons(
             to=from_number,
-            body_text="Por favor elegí el tipo de masaje:",
-            buttons=MASSAGE_TYPES,
+            body_text="Por favor elegí la duración del masaje:",
+            buttons=DURACION_BUTTONS,
+        )
+    elif step == "awaiting_regalo":
+        send_interactive_buttons(
+            to=from_number,
+            body_text="¿Es para regalar?",
+            buttons=[
+                {"id": "regalo_si", "title": "Sí, para regalar"},
+                {"id": "regalo_no", "title": "No, es para mí"},
+            ],
         )
     elif step == "awaiting_nombre":
         send_text_message(
@@ -476,6 +781,21 @@ def reprompt(from_number, session):
         send_text_message(
             to=from_number,
             text="Decime un día y horario. Ejemplo: mañana a las 15",
+        )
+    elif step == "awaiting_comprobante":
+        send_text_message(
+            to=from_number,
+            text="Envianos el comprobante de transferencia para continuar.",
+        )
+    elif step == "awaiting_voucher_code":
+        send_text_message(
+            to=from_number,
+            text="Por favor enviá el código de tu voucher.",
+        )
+    elif step == "awaiting_intencion":
+        send_text_message(
+            to=from_number,
+            text="Contanos brevemente tu situación o escribí 'finalizar' para terminar.",
         )
     else:
         send_welcome(from_number)
