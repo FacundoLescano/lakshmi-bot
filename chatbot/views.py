@@ -12,6 +12,7 @@ from django.views.decorators.http import require_http_methods
 from .availability import (
     PRICES,
     assign_camilla,
+    get_consecutive_pairs,
     get_free_camillas,
     is_available,
     suggest_alternatives,
@@ -222,9 +223,12 @@ def handle_horario(from_number, text, session):
     parsed = parsed.replace(minute=0, second=0, microsecond=0)
     logger.info("Parsed datetime: %s (hour=%s, tzinfo=%s)", parsed, parsed.hour, parsed.tzinfo)
 
-    needed = 2 if session.get("pareja") else 1
-    free_count = len(get_free_camillas(parsed))
-    has_availability = is_available(parsed) and free_count >= needed
+    es_pareja = session.get("pareja", False)
+
+    if es_pareja:
+        has_availability = is_available(parsed) and len(get_consecutive_pairs(parsed)) > 0
+    else:
+        has_availability = is_available(parsed) and len(get_free_camillas(parsed)) >= 1
 
     if has_availability:
         session["horario"] = parsed.isoformat()
@@ -232,7 +236,7 @@ def handle_horario(from_number, text, session):
         set_session(from_number, session)
         ask_confirmation(from_number, session, parsed)
     else:
-        alternatives = suggest_alternatives(parsed)
+        alternatives = suggest_alternatives(parsed, pareja=es_pareja)
         if alternatives:
             session["alternatives"] = [a.isoformat() for a in alternatives]
             session["step"] = "awaiting_alt"
@@ -407,10 +411,8 @@ def save_reserva(from_number, session):
     precio = PRICES.get(masaje_db_key, 0)
     adelanto = precio // 2
 
-    count = 2 if es_pareja else 1
-
     try:
-        camillas = assign_camilla(horario, count=count)
+        camillas = assign_camilla(horario, count=1, pareja=es_pareja)
     except ValueError:
         logger.warning("No camillas available at %s for %s", horario, from_number)
         send_text_message(

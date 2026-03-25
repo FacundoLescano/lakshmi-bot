@@ -2,7 +2,7 @@ import logging
 import random
 from datetime import timedelta
 
-from .models import ALL_CAMILLAS, Reserva
+from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, Reserva
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +47,39 @@ def is_available(dt):
     return len(free) > 0
 
 
-def assign_camilla(dt, count=1):
+def get_consecutive_pairs(dt):
     """
-    Assign `count` random free camillas for datetime dt.
+    Return available consecutive camilla pairs for pareja bookings.
+    Each pair is ((sucursal, cam_n), (sucursal, cam_n+1)).
+    """
+    free = set(get_free_camillas(dt))
+    pairs = []
+    for suc_id, _ in SUCURSALES:
+        for cam in range(1, CAMILLAS_POR_SUCURSAL):
+            a = (suc_id, cam)
+            b = (suc_id, cam + 1)
+            if a in free and b in free:
+                pairs.append((a, b))
+    return pairs
+
+
+def assign_camilla(dt, count=1, pareja=False):
+    """
+    Assign camillas for datetime dt.
+    - pareja=True: picks a random consecutive pair in the same sucursal.
+    - pareja=False: picks `count` random free camillas.
     Returns list of (sucursal, camilla) tuples.
     Raises ValueError if not enough camillas available.
     """
+    if pareja:
+        pairs = get_consecutive_pairs(dt)
+        if not pairs:
+            raise ValueError(
+                f"No consecutive camilla pairs available at {dt}"
+            )
+        pair = random.choice(pairs)
+        return list(pair)
+
     free = get_free_camillas(dt)
     if len(free) < count:
         raise ValueError(
@@ -61,12 +88,18 @@ def assign_camilla(dt, count=1):
     return random.sample(free, count)
 
 
-def suggest_alternatives(dt):
+def suggest_alternatives(dt, pareja=False):
     suggestions = []
     for offset in [-1, 1, -2, 2]:
         alt = dt + timedelta(hours=offset)
-        if OPENING_HOUR <= alt.hour < CLOSING_HOUR and is_available(alt):
-            suggestions.append(alt)
+        if alt.hour < OPENING_HOUR or alt.hour >= CLOSING_HOUR:
+            continue
+        if pareja:
+            if get_consecutive_pairs(alt):
+                suggestions.append(alt)
+        else:
+            if is_available(alt):
+                suggestions.append(alt)
         if len(suggestions) == 2:
             break
     return suggestions
