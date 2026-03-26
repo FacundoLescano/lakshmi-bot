@@ -124,6 +124,36 @@ def process_message(from_number, msg_type, message):
             _dispatch_lakshmi(from_number, msg_type, message, session)
             return
 
+        # Sin sesión: manejar botones de routing primero
+        if msg_type == "interactive":
+            interactive = message.get("interactive", {})
+            button_reply = interactive.get("button_reply", {})
+            button_id = button_reply.get("id", "")
+
+            if button_id == "route_lakshmi":
+                send_welcome(from_number)
+                return
+            if button_id == "route_intencionate":
+                intencionate_bot.process(from_number, "text", {"text": {"body": "intencionate"}}, None)
+                return
+
+            # Botón de intencionate sin sesión (ej: suscribirse)
+            if button_id.startswith("int_") or button_id.startswith("sat_"):
+                intencionate_bot.handle_button(from_number, button_id, None)
+                return
+
+            # Cualquier otro botón sin sesión → bienvenida
+            send_text_message(to=from_number, text="Se perdió la sesión. Empecemos de nuevo.")
+            send_interactive_buttons(
+                to=from_number,
+                body_text="¿En qué te podemos ayudar?",
+                buttons=[
+                    {"id": "route_lakshmi", "title": "Masajes Lakshmi"},
+                    {"id": "route_intencionate", "title": "Intencionate"},
+                ],
+            )
+            return
+
         # Sin sesión: si es texto, usar LLM router para decidir
         if msg_type == "text":
             text = message.get("text", {}).get("body", "").strip()
@@ -156,7 +186,7 @@ def process_message(from_number, msg_type, message):
                 )
             return
 
-        # Sin sesión y no es texto (ej: imagen suelta)
+        # Sin sesión y no es texto ni botón (ej: imagen suelta)
         send_text_message(to=from_number, text="¡Hola! Envianos un mensaje para comenzar.")
 
     except Exception:
