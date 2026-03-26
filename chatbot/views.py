@@ -457,9 +457,16 @@ def handle_voucher_code(from_number, text, session):
 
 def handle_intencion(from_number, text, session):
     if text:
+        reserva_ids = session.get("reserva_ids", [])
+        # Vinculamos la memoria con la primera reserva (la principal)
+        reserva = None
+        if reserva_ids:
+            reserva = Reserva.objects.filter(id=reserva_ids[0]).first()
+
         Memoria.objects.create(
             id_user=from_number,
             context=text[:200],
+            reserva=reserva,
         )
         send_text_message(
             to=from_number,
@@ -772,6 +779,8 @@ def save_reserva(from_number, session):
         reserva.camilla = cam
         reserva.save()
 
+        session["reserva_ids"] = [reserva.id]
+
         send_text_message(
             to=from_number,
             text=(
@@ -788,8 +797,9 @@ def save_reserva(from_number, session):
 
     else:
         # Normal reservation
+        reserva_ids = []
         for sucursal, camilla in camillas:
-            Reserva.objects.create(
+            r = Reserva.objects.create(
                 nombre=session["nombre"],
                 es_pareja=es_pareja,
                 duracion=duracion,
@@ -799,6 +809,9 @@ def save_reserva(from_number, session):
                 es_regalo=False,
                 telefono=from_number,
             )
+            reserva_ids.append(r.id)
+
+        session["reserva_ids"] = reserva_ids
 
         send_text_message(
             to=from_number,
