@@ -612,12 +612,10 @@ def get_price(session):
 
 def send_payment_info(from_number, session):
     precio = get_price(session)
-    adelanto = precio // 2
     send_text_message(
         to=from_number,
         text=(
-            f"💰 El precio total es ${precio:,}\n"
-            f"💳 Adelanto (50%): ${adelanto:,}\n\n"
+            f"💰 El precio total es ${precio:,}\n\n"
             f"Realizá la transferencia al siguiente CBU:\n\n"
             f"🏦 CBU: 0000000000000000000000\n"
             f"👤 Titular: Lakshmi Masajes\n\n"

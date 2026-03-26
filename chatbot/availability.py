@@ -7,7 +7,7 @@ from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, Reserva
 logger = logging.getLogger(__name__)
 
 OPENING_HOUR = 9
-CLOSING_HOUR = 21
+CLOSING_HOUR = 23
 
 TOTAL_CAMILLAS = len(ALL_CAMILLAS)
 
