@@ -167,17 +167,7 @@ def process_message(from_number, msg_type, message):
             logger.info("Router decision for %s: '%s' -> %s", from_number, text[:50], route)
 
             if route == "lakshmi":
-                # Ir directo al flujo de reserva
                 send_welcome(from_number)
-                set_session(from_number, {"bot": "lakshmi", "step": "awaiting_pareja", "flow": "reserva"})
-                send_interactive_buttons(
-                    to=from_number,
-                    body_text="¿La reserva es para pareja?",
-                    buttons=[
-                        {"id": "pareja_si", "title": "Sí, para pareja"},
-                        {"id": "pareja_no", "title": "No, individual"},
-                    ],
-                )
             elif route == "intencionate":
                 intencionate_bot.process(from_number, msg_type, message, None)
             else:
