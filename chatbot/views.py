@@ -19,6 +19,8 @@ from .availability import (
 )
 from .conversation import clear_session, get_session, set_session
 from .models import Memoria, Reserva, generate_voucher_code
+from . import intencionate as intencionate_bot
+from .llm_router import route_message
 from .whatsapp import send_interactive_buttons, send_text_message
 
 logger = logging.getLogger(__name__)
@@ -112,24 +114,69 @@ def process_message(from_number, msg_type, message):
 
         session = get_session(from_number)
 
-        if msg_type == "interactive":
-            interactive = message.get("interactive", {})
-            button_reply = interactive.get("button_reply", {})
-            button_id = button_reply.get("id", "")
-            handle_button(from_number, button_id, session)
+        # Si ya tiene sesión activa, derivar al bot correcto
+        if session:
+            bot = session.get("bot")
+            if bot == "intencionate":
+                intencionate_bot.process(from_number, msg_type, message, session)
+                return
+            # Bot lakshmi (default)
+            _dispatch_lakshmi(from_number, msg_type, message, session)
+            return
 
-        elif msg_type == "text":
+        # Sin sesión: si es texto, usar LLM router para decidir
+        if msg_type == "text":
             text = message.get("text", {}).get("body", "").strip()
-            handle_text(from_number, text, session)
 
-        elif msg_type in ("image", "document"):
-            handle_file(from_number, session)
+            if text.lower() in ("finalizar conversación", "finalizar conversacion", "finalizar"):
+                clear_session(from_number)
+                send_text_message(to=from_number, text="¡Gracias por contactarnos!")
+                return
+
+            route = route_message(text)
+            logger.info("Router decision for %s: '%s' -> %s", from_number, text[:50], route)
+
+            if route == "lakshmi":
+                send_welcome(from_number)
+            elif route == "intencionate":
+                intencionate_bot.process(from_number, msg_type, message, None)
+            else:
+                # Saludo genérico
+                send_text_message(
+                    to=from_number,
+                    text="¡Hola! ¿En qué te podemos ayudar?",
+                )
+                send_interactive_buttons(
+                    to=from_number,
+                    body_text="Elegí una opción:",
+                    buttons=[
+                        {"id": "route_lakshmi", "title": "Masajes Lakshmi"},
+                        {"id": "route_intencionate", "title": "Intencionate"},
+                    ],
+                )
+            return
+
+        # Sin sesión y no es texto (ej: imagen suelta)
+        send_text_message(to=from_number, text="¡Hola! Envianos un mensaje para comenzar.")
 
     except Exception:
         logger.exception("Error processing message from %s", from_number)
     finally:
         from django.db import close_old_connections
         close_old_connections()
+
+
+def _dispatch_lakshmi(from_number, msg_type, message, session):
+    if msg_type == "interactive":
+        interactive = message.get("interactive", {})
+        button_reply = interactive.get("button_reply", {})
+        button_id = button_reply.get("id", "")
+        handle_button(from_number, button_id, session)
+    elif msg_type == "text":
+        text = message.get("text", {}).get("body", "").strip()
+        handle_text(from_number, text, session)
+    elif msg_type in ("image", "document"):
+        handle_file(from_number, session)
 
 
 # ── Text handler ─────────────────────────────────────────────
@@ -144,6 +191,7 @@ def handle_text(from_number, text, session):
         return
 
     if not session:
+        # No debería llegar acá (el router maneja sin sesión), pero por seguridad
         send_welcome(from_number)
         return
 
@@ -408,9 +456,23 @@ def handle_intencion(from_number, text, session):
 def handle_button(from_number, button_id, session):
     logger.info("Button pressed: %s, session: %s", button_id, session)
 
+    # ── Router buttons (sin sesión previa) ──
+    if button_id == "route_lakshmi":
+        send_welcome(from_number)
+        return
+
+    if button_id == "route_intencionate":
+        intencionate_bot.process(from_number, "text", {"text": {"body": "intencionate"}}, None)
+        return
+
+    # ── Intencionate buttons (derivar al otro bot) ──
+    if button_id.startswith("int_") or button_id.startswith("sat_"):
+        intencionate_bot.handle_button(from_number, button_id, session)
+        return
+
     # ── Main menu buttons (no session needed) ──
     if button_id == "btn_reserva":
-        set_session(from_number, {"step": "awaiting_pareja", "flow": "reserva"})
+        set_session(from_number, {"bot": "lakshmi", "step": "awaiting_pareja", "flow": "reserva"})
         send_interactive_buttons(
             to=from_number,
             body_text="¿La reserva es para pareja?",
@@ -429,7 +491,7 @@ def handle_button(from_number, button_id, session):
         return
 
     if button_id == "btn_voucher":
-        set_session(from_number, {"step": "awaiting_voucher_code", "flow": "voucher"})
+        set_session(from_number, {"bot": "lakshmi", "step": "awaiting_voucher_code", "flow": "voucher"})
         send_text_message(
             to=from_number,
             text="Por favor enviá el código de tu voucher.",
@@ -581,6 +643,7 @@ def handle_button(from_number, button_id, session):
 # ── Helpers ──────────────────────────────────────────────────
 
 def send_welcome(from_number):
+    set_session(from_number, {"bot": "lakshmi", "step": "welcome"})
     send_interactive_buttons(
         to=from_number,
         body_text=(
