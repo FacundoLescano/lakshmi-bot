@@ -2,7 +2,7 @@ import logging
 import random
 from datetime import timedelta
 
-from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, Reserva
+from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, Precio, Reserva
 
 logger = logging.getLogger(__name__)
 
@@ -11,11 +11,10 @@ CLOSING_HOUR = 23
 
 TOTAL_CAMILLAS = len(ALL_CAMILLAS)
 
-PRICES = {
-    60: 50000,
-    90: 65000,
-    120: 80000,
-}
+
+def get_prices():
+    """Read prices from DB, with hardcoded fallback."""
+    return Precio.get_prices()
 
 
 def get_occupied_camillas(dt):

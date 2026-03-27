@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from chatbot.models import Intencionate, Memoria, Reserva
+from chatbot.models import Intencionate, Memoria, Precio, Reserva
 
 
 class MemoriaSerializer(serializers.ModelSerializer):
@@ -20,4 +20,10 @@ class ReservaSerializer(serializers.ModelSerializer):
 class IntencionateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Intencionate
+        fields = "__all__"
+
+
+class PrecioSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Precio
         fields = "__all__"

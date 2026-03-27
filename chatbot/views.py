@@ -10,20 +10,22 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .availability import (
-    PRICES,
     assign_camilla,
     get_consecutive_pairs,
     get_free_camillas,
+    get_prices,
     is_available,
     suggest_alternatives,
 )
 from .conversation import clear_session, get_session, set_session
-from .models import Memoria, Reserva, generate_voucher_code
+from .models import Memoria, Precio, Reserva, generate_voucher_code
 from . import intencionate as intencionate_bot
 from .llm_router import route_message
 from .whatsapp import send_interactive_buttons, send_text_message
 
 logger = logging.getLogger(__name__)
+
+ADMIN_CODE = "Usuario admin intencionate 27326"
 
 DURACION_BUTTONS = [
     {"id": "dur_60", "title": "60 minutos"},
@@ -163,6 +165,11 @@ def process_message(from_number, msg_type, message):
                 send_text_message(to=from_number, text="¡Gracias por contactarnos!")
                 return
 
+            # Admin access
+            if text == ADMIN_CODE:
+                start_admin(from_number)
+                return
+
             route = route_message(text)
             logger.info("Router decision for %s: '%s' -> %s", from_number, text[:50], route)
 
@@ -216,12 +223,23 @@ def handle_text(from_number, text, session):
         )
         return
 
+    if text == ADMIN_CODE:
+        start_admin(from_number)
+        return
+
     if not session:
-        # No debería llegar acá (el router maneja sin sesión), pero por seguridad
         send_welcome(from_number)
         return
 
     step = session.get("step")
+
+    # Admin steps
+    if step == "admin_awaiting_telefono":
+        admin_search_reservas(from_number, text, session)
+        return
+    if step == "admin_awaiting_nuevo_precio":
+        admin_set_precio(from_number, text, session)
+        return
 
     if step == "awaiting_nombre":
         handle_nombre(from_number, text, session)
@@ -490,6 +508,38 @@ def handle_intencion(from_number, text, session):
 
 def handle_button(from_number, button_id, session):
     logger.info("Button pressed: %s, session: %s", button_id, session)
+
+    # ── Admin buttons ──
+    if button_id == "admin_cancelar":
+        session = {"bot": "lakshmi", "step": "admin_awaiting_telefono", "admin": True, "admin_action": "cancelar"}
+        set_session(from_number, session)
+        send_text_message(to=from_number, text="Enviá el teléfono del cliente (sin +, ej: 541166506924)")
+        return
+
+    if button_id == "admin_precios":
+        admin_show_precios(from_number)
+        return
+
+    if button_id.startswith("admin_cancel_"):
+        admin_confirm_cancel(from_number, button_id, session)
+        return
+
+    if button_id == "admin_cancel_confirm":
+        admin_execute_cancel(from_number, session)
+        return
+
+    if button_id == "admin_cancel_abort":
+        send_text_message(to=from_number, text="Cancelación abortada.")
+        start_admin(from_number)
+        return
+
+    if button_id.startswith("admin_precio_"):
+        admin_select_duracion(from_number, button_id, session)
+        return
+
+    if button_id == "admin_volver":
+        start_admin(from_number)
+        return
 
     # ── Router buttons (sin sesión previa) ──
     if button_id == "route_lakshmi":
@@ -941,6 +991,11 @@ def confirm_cambio_horario(from_number, session):
 # ── Helpers ──────────────────────────────────────────────────
 
 def send_welcome(from_number):
+    prices = get_prices()
+    p60 = prices.get(60, 50000)
+    p90 = prices.get(90, 65000)
+    p120 = prices.get(120, 80000)
+
     set_session(from_number, {"bot": "lakshmi", "step": "welcome"})
     send_interactive_buttons(
         to=from_number,
@@ -948,9 +1003,9 @@ def send_welcome(from_number):
             "Muchas gracias por tu interés!\n"
             "Lakshmi 💆🏼 es una gran experiencia para regalar y regalarte.\n"
             "Te compartimos nuestro menú de propuestas para disfrutar:\n\n"
-            "💆🏻‍♀️ Masaje Relajante y Descontracturante de 60 minutos $50.000\n"
-            "🦶 + Reflexología de Pies, 90 minutos de Masaje $65.000\n"
-            "💆🏼 Masaje Full (todo lo anterior + piedras calientes) 120 minutos $80.000\n\n"
+            f"💆🏻‍♀️ Masaje Relajante y Descontracturante de 60 minutos ${p60:,}\n"
+            f"🦶 + Reflexología de Pies, 90 minutos de Masaje ${p90:,}\n"
+            f"💆🏼 Masaje Full (todo lo anterior + piedras calientes) 120 minutos ${p120:,}\n\n"
             "➡️ Los precios son por persona.\n"
             "➡️ Aceptamos todas las formas de pago.\n"
             "➡️ Abiertos todos los días, hasta las 22 hs."
@@ -965,7 +1020,8 @@ def send_welcome(from_number):
 
 def get_price(session):
     duracion = session.get("duracion", 60)
-    precio = PRICES.get(duracion, 50000)
+    prices = get_prices()
+    precio = prices.get(duracion, 50000)
     if session.get("pareja"):
         precio *= 2
     return precio
@@ -1174,3 +1230,210 @@ def reprompt(from_number, session):
         )
     else:
         send_welcome(from_number)
+
+
+# ── Superadmin ───────────────────────────────────────────────
+
+def start_admin(from_number):
+    set_session(from_number, {"bot": "lakshmi", "step": "admin_menu", "admin": True})
+    send_interactive_buttons(
+        to=from_number,
+        body_text="🔐 Panel de administración\n\n¿Qué querés hacer?",
+        buttons=[
+            {"id": "admin_cancelar", "title": "Cancelar reserva"},
+            {"id": "admin_precios", "title": "Modificar precios"},
+        ],
+    )
+
+
+def admin_search_reservas(from_number, text, session):
+    telefono = text.strip().replace("+", "")
+    reservas = list(
+        Reserva.objects.filter(
+            telefono=telefono,
+            horario__isnull=False,
+        ).order_by("horario")
+    )
+
+    if not reservas:
+        send_text_message(
+            to=from_number,
+            text=f"No se encontraron reservas activas para el teléfono {telefono}.",
+        )
+        start_admin(from_number)
+        return
+
+    if len(reservas) == 1:
+        r = reservas[0]
+        session["admin_reserva_id"] = r.id
+        session["admin_cliente_tel"] = telefono
+        session["step"] = "admin_awaiting_confirm_cancel"
+        set_session(from_number, session)
+        send_interactive_buttons(
+            to=from_number,
+            body_text=(
+                f"Reserva encontrada:\n\n"
+                f"👤 {r.nombre}\n"
+                f"📅 {r.horario.strftime('%A %d/%m a las %H:%Mhs')}\n"
+                f"💆 {r.duracion} min {'(pareja)' if r.es_pareja else '(individual)'}\n"
+                f"📍 {r.sucursal} - Camilla {r.camilla}\n\n"
+                f"¿Confirmar cancelación?"
+            ),
+            buttons=[
+                {"id": "admin_cancel_confirm", "title": "Sí, cancelar"},
+                {"id": "admin_cancel_abort", "title": "No, volver"},
+            ],
+        )
+        return
+
+    # Múltiples reservas (máx 3 botones)
+    session["admin_reservas"] = [
+        {"id": r.id, "nombre": r.nombre, "horario": r.horario.isoformat(), "duracion": r.duracion}
+        for r in reservas[:3]
+    ]
+    session["admin_cliente_tel"] = telefono
+    session["step"] = "admin_awaiting_select_cancel"
+    set_session(from_number, session)
+
+    buttons = []
+    for i, r in enumerate(reservas[:3]):
+        label = f"{r.horario.strftime('%d/%m %H:%M')} {r.duracion}min"
+        buttons.append({"id": f"admin_cancel_{i}", "title": label[:20]})
+
+    send_interactive_buttons(
+        to=from_number,
+        body_text=f"Reservas de {telefono}:\n¿Cuál querés cancelar?",
+        buttons=buttons,
+    )
+
+
+def admin_confirm_cancel(from_number, button_id, session):
+    idx = int(button_id.replace("admin_cancel_", ""))
+    reservas_data = session.get("admin_reservas", [])
+
+    if idx >= len(reservas_data):
+        send_text_message(to=from_number, text="Opción inválida.")
+        start_admin(from_number)
+        return
+
+    selected = reservas_data[idx]
+    session["admin_reserva_id"] = selected["id"]
+    session["step"] = "admin_awaiting_confirm_cancel"
+    set_session(from_number, session)
+
+    from datetime import datetime
+    horario = datetime.fromisoformat(selected["horario"])
+
+    send_interactive_buttons(
+        to=from_number,
+        body_text=(
+            f"¿Confirmar cancelación?\n\n"
+            f"👤 {selected['nombre']}\n"
+            f"📅 {horario.strftime('%A %d/%m a las %H:%Mhs')}\n"
+            f"💆 {selected['duracion']} min"
+        ),
+        buttons=[
+            {"id": "admin_cancel_confirm", "title": "Sí, cancelar"},
+            {"id": "admin_cancel_abort", "title": "No, volver"},
+        ],
+    )
+
+
+def admin_execute_cancel(from_number, session):
+    reserva_id = session.get("admin_reserva_id")
+    cliente_tel = session.get("admin_cliente_tel", "")
+
+    try:
+        reserva = Reserva.objects.get(id=reserva_id)
+        info = (
+            f"📅 {reserva.horario.strftime('%A %d/%m a las %H:%Mhs')}\n"
+            f"💆 {reserva.duracion} min - {reserva.nombre}"
+        )
+
+        # Si es pareja, cancelar ambas reservas del mismo horario
+        if reserva.es_pareja:
+            Reserva.objects.filter(
+                telefono=reserva.telefono,
+                horario=reserva.horario,
+                es_pareja=True,
+            ).delete()
+        else:
+            reserva.delete()
+
+        send_text_message(
+            to=from_number,
+            text=f"✅ Reserva cancelada:\n{info}",
+        )
+
+        # Notificar al cliente
+        if cliente_tel:
+            send_text_message(
+                to=cliente_tel,
+                text=(
+                    f"Hola, te informamos que tu reserva ha sido cancelada:\n{info}\n\n"
+                    f"Si tenés consultas, escribinos."
+                ),
+            )
+
+    except Reserva.DoesNotExist:
+        send_text_message(to=from_number, text="No se encontró la reserva.")
+
+    start_admin(from_number)
+
+
+def admin_show_precios(from_number):
+    prices = get_prices()
+    lines = "\n".join(f"• {dur} min → ${precio:,}" for dur, precio in sorted(prices.items()))
+
+    session = {"bot": "lakshmi", "step": "admin_precios", "admin": True}
+    set_session(from_number, session)
+
+    send_interactive_buttons(
+        to=from_number,
+        body_text=f"Precios actuales:\n\n{lines}\n\n¿Cuál querés modificar?",
+        buttons=[
+            {"id": "admin_precio_60", "title": "60 minutos"},
+            {"id": "admin_precio_90", "title": "90 minutos"},
+            {"id": "admin_precio_120", "title": "120 minutos"},
+        ],
+    )
+
+
+def admin_select_duracion(from_number, button_id, session):
+    dur_str = button_id.replace("admin_precio_", "")
+    duracion = int(dur_str)
+    prices = get_prices()
+    precio_actual = prices.get(duracion, 0)
+
+    session = {
+        "bot": "lakshmi",
+        "step": "admin_awaiting_nuevo_precio",
+        "admin": True,
+        "admin_duracion": duracion,
+    }
+    set_session(from_number, session)
+
+    send_text_message(
+        to=from_number,
+        text=f"Precio actual de {duracion} min: ${precio_actual:,}\n\nEnviá el nuevo precio (solo números, ej: 55000)",
+    )
+
+
+def admin_set_precio(from_number, text, session):
+    duracion = session.get("admin_duracion")
+    try:
+        nuevo_precio = int(text.strip().replace(".", "").replace(",", "").replace("$", ""))
+    except ValueError:
+        send_text_message(to=from_number, text="Precio inválido. Enviá solo números, ej: 55000")
+        return
+
+    Precio.objects.update_or_create(
+        duracion=duracion,
+        defaults={"precio": nuevo_precio},
+    )
+
+    send_text_message(
+        to=from_number,
+        text=f"✅ Precio actualizado: {duracion} min → ${nuevo_precio:,}",
+    )
+    admin_show_precios(from_number)

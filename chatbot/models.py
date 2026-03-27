@@ -88,3 +88,19 @@ class Intencionate(models.Model):
 
     def __str__(self):
         return f"{self.nombre} ({self.telefono}) - {self.tipo_plan}"
+
+
+class Precio(models.Model):
+    duracion = models.PositiveIntegerField(unique=True)
+    precio = models.PositiveIntegerField()
+
+    def __str__(self):
+        return f"{self.duracion} min → ${self.precio:,}"
+
+    @classmethod
+    def get_prices(cls):
+        """Returns a dict {duracion: precio}. Falls back to defaults if table is empty."""
+        precios = dict(cls.objects.values_list("duracion", "precio"))
+        if not precios:
+            return {60: 50000, 90: 65000, 120: 80000}
+        return precios

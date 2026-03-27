@@ -1,8 +1,8 @@
 from rest_framework import viewsets
 
-from chatbot.models import Intencionate, Memoria, Reserva
+from chatbot.models import Intencionate, Memoria, Precio, Reserva
 
-from .serializers import IntencionateSerializer, MemoriaSerializer, ReservaSerializer
+from .serializers import IntencionateSerializer, MemoriaSerializer, PrecioSerializer, ReservaSerializer
 
 
 class ReservaViewSet(viewsets.ModelViewSet):
@@ -18,3 +18,8 @@ class MemoriaViewSet(viewsets.ModelViewSet):
 class IntencionateViewSet(viewsets.ModelViewSet):
     queryset = Intencionate.objects.all().order_by("-date")
     serializer_class = IntencionateSerializer
+
+
+class PrecioViewSet(viewsets.ModelViewSet):
+    queryset = Precio.objects.all().order_by("duracion")
+    serializer_class = PrecioSerializer
