@@ -227,6 +227,8 @@ def handle_text(from_number, text, session):
         handle_nombre(from_number, text, session)
     elif step == "awaiting_horario":
         handle_horario(from_number, text, session)
+    elif step == "awaiting_nuevo_horario":
+        handle_nuevo_horario(from_number, text, session)
     elif step == "awaiting_voucher_code":
         handle_voucher_code(from_number, text, session)
     elif step == "awaiting_intencion":
@@ -517,10 +519,7 @@ def handle_button(from_number, button_id, session):
         return
 
     if button_id == "btn_cambiar":
-        send_text_message(
-            to=from_number,
-            text="Para cambiar el horario de tu reserva, contactanos directamente.",
-        )
+        start_cambiar_horario(from_number)
         return
 
     if button_id == "btn_voucher":
@@ -650,6 +649,55 @@ def handle_button(from_number, button_id, session):
             )
             return
 
+    # Seleccionar reserva para cambiar
+    if step == "awaiting_select_reserva" and button_id.startswith("cambiar_"):
+        handle_select_reserva(from_number, button_id, session)
+        return
+
+    # Confirmar cambio de horario
+    if step == "awaiting_confirm_cambio":
+        if button_id == "cambio_si":
+            confirm_cambio_horario(from_number, session)
+            return
+        if button_id == "cambio_no":
+            session["step"] = "awaiting_nuevo_horario"
+            set_session(from_number, session)
+            send_text_message(
+                to=from_number,
+                text="Decime otro día y horario.",
+            )
+            return
+
+    # Alternativas de horario para cambio
+    if step == "awaiting_alt_cambio":
+        if button_id == "altcam_otro":
+            session["step"] = "awaiting_nuevo_horario"
+            set_session(from_number, session)
+            send_text_message(
+                to=from_number,
+                text="Decime otro día y horario.",
+            )
+            return
+
+        if button_id.startswith("altcam_"):
+            from datetime import datetime
+            alt_index = int(button_id.replace("altcam_", ""))
+            alternatives = session.get("alternatives", [])
+            if alt_index < len(alternatives):
+                session["nuevo_horario"] = alternatives[alt_index]
+                session["step"] = "awaiting_confirm_cambio"
+                set_session(from_number, session)
+                parsed = datetime.fromisoformat(alternatives[alt_index])
+                send_interactive_buttons(
+                    to=from_number,
+                    body_text=f"¿Confirmás el cambio a {parsed.strftime('%A %d/%m a las %H:%Mhs')}?",
+                    buttons=[
+                        {"id": "cambio_si", "title": "Sí, confirmar"},
+                        {"id": "cambio_no", "title": "Otro horario"},
+                    ],
+                )
+            return
+
     # Intencionar masaje
     if step == "awaiting_intencionar":
         if button_id == "intencionar_si":
@@ -671,6 +719,223 @@ def handle_button(from_number, button_id, session):
             )
             clear_session(from_number)
             return
+
+
+# ── Cambiar horario ──────────────────────────────────────────
+
+def start_cambiar_horario(from_number):
+    from datetime import datetime
+
+    reservas = list(
+        Reserva.objects.filter(
+            telefono=from_number,
+            horario__isnull=False,
+        ).order_by("horario")
+    )
+
+    if not reservas:
+        send_text_message(
+            to=from_number,
+            text="No tenés reservas activas para modificar.",
+        )
+        return
+
+    if len(reservas) == 1:
+        r = reservas[0]
+        session = {
+            "bot": "lakshmi",
+            "flow": "cambiar",
+            "step": "awaiting_nuevo_horario",
+            "cambiar_reserva_id": r.id,
+            "pareja": r.es_pareja,
+            "duracion": r.duracion,
+        }
+        set_session(from_number, session)
+        send_text_message(
+            to=from_number,
+            text=(
+                f"Reserva encontrada:\n"
+                f"📅 {r.horario.strftime('%A %d/%m a las %H:%Mhs')}\n"
+                f"💆 {r.duracion} min - {r.nombre}\n\n"
+                f"¿Para qué día y horario querés cambiarla?\n\n"
+                f"Podés escribir, por ejemplo:\n"
+                f"• mañana a las 15\n"
+                f"• viernes a las 18"
+            ),
+        )
+        return
+
+    # Múltiples reservas: mostrar botones (máximo 3 por limitación de WhatsApp)
+    session = {
+        "bot": "lakshmi",
+        "flow": "cambiar",
+        "step": "awaiting_select_reserva",
+        "reservas_cambiar": [
+            {
+                "id": r.id,
+                "horario": r.horario.isoformat(),
+                "duracion": r.duracion,
+                "nombre": r.nombre,
+                "es_pareja": r.es_pareja,
+            }
+            for r in reservas[:3]
+        ],
+    }
+    set_session(from_number, session)
+
+    buttons = []
+    for i, r in enumerate(reservas[:3]):
+        label = f"{r.horario.strftime('%d/%m %H:%M')} - {r.duracion}min"
+        buttons.append({"id": f"cambiar_{i}", "title": label[:20]})
+
+    send_interactive_buttons(
+        to=from_number,
+        body_text="¿Cuál reserva querés modificar?",
+        buttons=buttons,
+    )
+
+
+def handle_select_reserva(from_number, button_id, session):
+    idx = int(button_id.replace("cambiar_", ""))
+    reservas_data = session.get("reservas_cambiar", [])
+
+    if idx >= len(reservas_data):
+        send_text_message(to=from_number, text="Opción inválida. Intentá de nuevo.")
+        return
+
+    selected = reservas_data[idx]
+    session["cambiar_reserva_id"] = selected["id"]
+    session["pareja"] = selected["es_pareja"]
+    session["duracion"] = selected["duracion"]
+    session["step"] = "awaiting_nuevo_horario"
+    set_session(from_number, session)
+
+    send_text_message(
+        to=from_number,
+        text=(
+            f"¿Para qué día y horario querés cambiarla?\n\n"
+            f"Podés escribir, por ejemplo:\n"
+            f"• mañana a las 15\n"
+            f"• viernes a las 18"
+        ),
+    )
+
+
+def handle_nuevo_horario(from_number, text, session):
+    parsed = parse_horario(text)
+
+    if not parsed:
+        send_text_message(
+            to=from_number,
+            text="No pude entender la fecha. Probá con algo como: mañana a las 15, viernes a las 10",
+        )
+        return
+
+    parsed = parsed.replace(minute=0, second=0, microsecond=0)
+    es_pareja = session.get("pareja", False)
+
+    if es_pareja:
+        has_availability = is_available(parsed) and len(get_consecutive_pairs(parsed)) > 0
+    else:
+        has_availability = is_available(parsed) and len(get_free_camillas(parsed)) >= 1
+
+    if has_availability:
+        session["nuevo_horario"] = parsed.isoformat()
+        session["step"] = "awaiting_confirm_cambio"
+        set_session(from_number, session)
+
+        send_interactive_buttons(
+            to=from_number,
+            body_text=f"¿Confirmás el cambio de horario a {parsed.strftime('%A %d/%m a las %H:%Mhs')}?",
+            buttons=[
+                {"id": "cambio_si", "title": "Sí, confirmar"},
+                {"id": "cambio_no", "title": "Otro horario"},
+            ],
+        )
+    else:
+        alternatives = suggest_alternatives(parsed, pareja=es_pareja)
+        if alternatives:
+            session["alternatives"] = [a.isoformat() for a in alternatives]
+            session["step"] = "awaiting_alt_cambio"
+            set_session(from_number, session)
+
+            buttons = []
+            for i, alt in enumerate(alternatives):
+                label = alt.strftime("%A %H:%Mhs").capitalize()
+                buttons.append({"id": f"altcam_{i}", "title": label[:20]})
+            buttons.append({"id": "altcam_otro", "title": "Otro horario"})
+
+            send_interactive_buttons(
+                to=from_number,
+                body_text=(
+                    f"El horario {parsed.strftime('%A %H:%Mhs')} no está disponible. "
+                    "¿Te sirve alguno de estos?"
+                ),
+                buttons=buttons,
+            )
+        else:
+            send_text_message(
+                to=from_number,
+                text="No hay horarios disponibles cercanos a esa hora. Probá con otro día u horario.",
+            )
+
+
+def confirm_cambio_horario(from_number, session):
+    from datetime import datetime
+
+    reserva_id = session["cambiar_reserva_id"]
+    nuevo_horario = datetime.fromisoformat(session["nuevo_horario"])
+    es_pareja = session.get("pareja", False)
+
+    try:
+        reserva = Reserva.objects.get(id=reserva_id)
+    except Reserva.DoesNotExist:
+        send_text_message(to=from_number, text="No se encontró la reserva. Intentá de nuevo.")
+        clear_session(from_number)
+        return
+
+    try:
+        camillas = assign_camilla(nuevo_horario, pareja=es_pareja)
+    except ValueError:
+        send_text_message(
+            to=from_number,
+            text="Ya no quedan camillas para ese horario. Probá con otro.",
+        )
+        session["step"] = "awaiting_nuevo_horario"
+        set_session(from_number, session)
+        return
+
+    # Si es pareja, buscar la segunda reserva del mismo horario/teléfono
+    if es_pareja:
+        pareja_reservas = list(
+            Reserva.objects.filter(
+                telefono=from_number,
+                horario=reserva.horario,
+                es_pareja=True,
+            ).order_by("id")[:2]
+        )
+        for i, r in enumerate(pareja_reservas):
+            suc, cam = camillas[i] if i < len(camillas) else camillas[0]
+            r.horario = nuevo_horario
+            r.sucursal = suc
+            r.camilla = cam
+            r.save()
+    else:
+        suc, cam = camillas[0]
+        reserva.horario = nuevo_horario
+        reserva.sucursal = suc
+        reserva.camilla = cam
+        reserva.save()
+
+    send_text_message(
+        to=from_number,
+        text=(
+            f"✅ ¡Horario actualizado!\n\n"
+            f"📅 Nuevo horario: {nuevo_horario.strftime('%A %d/%m a las %H:%Mhs')}\n\n"
+            f"¡Te esperamos en Lakshmi!"
+        ),
+    )
+    clear_session(from_number)
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -896,6 +1161,16 @@ def reprompt(from_number, session):
         send_text_message(
             to=from_number,
             text="Contanos brevemente tu situación o escribí 'finalizar' para terminar.",
+        )
+    elif step == "awaiting_nuevo_horario":
+        send_text_message(
+            to=from_number,
+            text="Decime un día y horario. Ejemplo: mañana a las 15",
+        )
+    elif step == "awaiting_select_reserva":
+        send_text_message(
+            to=from_number,
+            text="Por favor seleccioná una reserva de las opciones.",
         )
     else:
         send_welcome(from_number)
