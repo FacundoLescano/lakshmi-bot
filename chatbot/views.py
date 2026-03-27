@@ -1247,13 +1247,15 @@ def start_admin(from_number):
 
 
 def admin_search_reservas(from_number, text, session):
-    telefono = text.strip().replace("+", "")
+    telefono = normalize_ar_number(text.strip().replace("+", ""))
+    logger.info("Admin searching reservas for telefono: '%s' (raw: '%s')", telefono, text)
     reservas = list(
         Reserva.objects.filter(
             telefono=telefono,
             horario__isnull=False,
-        ).order_by("horario")
+        ).order_by("-horario")[:3]
     )
+    logger.info("Admin found %d reservas for %s", len(reservas), telefono)
 
     if not reservas:
         send_text_message(
@@ -1272,12 +1274,8 @@ def admin_search_reservas(from_number, text, session):
         send_interactive_buttons(
             to=from_number,
             body_text=(
-                f"Reserva encontrada:\n\n"
-                f"👤 {r.nombre}\n"
-                f"📅 {r.horario.strftime('%A %d/%m a las %H:%Mhs')}\n"
-                f"💆 {r.duracion} min {'(pareja)' if r.es_pareja else '(individual)'}\n"
-                f"📍 {r.sucursal} - Camilla {r.camilla}\n\n"
-                f"¿Confirmar cancelación?"
+                f"{r.nombre} - {r.horario.strftime('%d/%m %H:%Mhs')} "
+                f"{r.duracion}min\n¿Cancelar?"
             ),
             buttons=[
                 {"id": "admin_cancel_confirm", "title": "Sí, cancelar"},
