@@ -1,6 +1,9 @@
+import logging
 import os
+
 import requests
 
+logger = logging.getLogger(__name__)
 
 WHATSAPP_API_URL = "https://graph.facebook.com/v21.0/{phone_id}/messages"
 
@@ -37,6 +40,12 @@ def send_interactive_buttons(to, body_text, buttons):
         },
         json=payload,
     )
+    if not response.ok:
+        logger.error(
+            "WhatsApp API error %s: %s (body_len=%d, buttons=%d)",
+            response.status_code, response.text,
+            len(body_text), len(buttons),
+        )
     response.raise_for_status()
     return response.json()
 
@@ -61,5 +70,7 @@ def send_text_message(to, text):
         },
         json=payload,
     )
+    if not response.ok:
+        logger.error("WhatsApp API error %s: %s", response.status_code, response.text)
     response.raise_for_status()
     return response.json()
