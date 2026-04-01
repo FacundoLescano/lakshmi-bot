@@ -37,40 +37,44 @@ class PrecioViewSet(viewsets.ModelViewSet):
 class BloqueHorarioViewSet(viewsets.ModelViewSet):
     queryset = BloqueHorario.objects.all()
     serializer_class = BloqueHorarioSerializer
-    filterset_fields = ["fecha", "activo"]
+    filterset_fields = ["fecha", "activo", "sucursal", "camilla", "hora"]
 
     @action(detail=False, methods=["post"])
     def bulk(self, request):
         """
-        Crear/actualizar múltiples bloques de un día.
+        Crear/actualizar celdas de un día.
 
         POST /api/bloques/bulk/
         {
             "fecha": "2026-04-01",
-            "horas": [9, 10, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22],
-            "activo": true
+            "celdas": [
+                {"hora": 9, "sucursal": "sucursal_1", "camilla": 1},
+                {"hora": 9, "sucursal": "sucursal_1", "camilla": 2},
+                {"hora": 10, "sucursal": "sucursal_1", "camilla": 1}
+            ]
         }
 
-        Crea bloques para las horas indicadas. Si ya existen, actualiza el estado.
-        Las horas del día NO incluidas se desactivan.
+        Las celdas incluidas se activan. Las demás del día se desactivan.
         """
         serializer = BloqueHorarioBulkSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         fecha = serializer.validated_data["fecha"]
-        horas = serializer.validated_data["horas"]
-        activo = serializer.validated_data["activo"]
+        celdas = serializer.validated_data["celdas"]
 
-        # Desactivar todas las horas del día que no están en la lista
-        BloqueHorario.objects.filter(fecha=fecha).exclude(hora__in=horas).update(activo=False)
+        # Desactivar todas las celdas del día
+        BloqueHorario.objects.filter(fecha=fecha).update(activo=False)
 
-        # Crear o actualizar las horas indicadas
+        # Crear o activar las celdas indicadas
         created = 0
         updated = 0
-        for hora in horas:
+        for celda in celdas:
             obj, was_created = BloqueHorario.objects.update_or_create(
-                fecha=fecha, hora=hora,
-                defaults={"activo": activo},
+                fecha=fecha,
+                hora=celda["hora"],
+                sucursal=celda["sucursal"],
+                camilla=celda["camilla"],
+                defaults={"activo": True},
             )
             if was_created:
                 created += 1

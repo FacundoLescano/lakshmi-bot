@@ -35,8 +35,16 @@ class BloqueHorarioSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class CeldaSerializer(serializers.Serializer):
+    hora = serializers.IntegerField(min_value=0, max_value=23)
+    sucursal = serializers.ChoiceField(choices=BloqueHorario.sucursal.field.choices)
+    camilla = serializers.IntegerField(min_value=1)
+
+
 class BloqueHorarioBulkSerializer(serializers.Serializer):
-    """Para crear/actualizar múltiples bloques de un día de golpe."""
+    """
+    Crear/actualizar múltiples celdas de un día.
+    Las celdas incluidas se activan; las demás del día se desactivan.
+    """
     fecha = serializers.DateField()
-    horas = serializers.ListField(child=serializers.IntegerField(min_value=0, max_value=23))
-    activo = serializers.BooleanField(default=True)
+    celdas = CeldaSerializer(many=True)

@@ -91,17 +91,19 @@ class Intencionate(models.Model):
 
 
 class BloqueHorario(models.Model):
-    """Define qué horas están habilitadas para reservar (opt-in)."""
+    """Define qué celdas (hora + camilla + sucursal) están habilitadas (opt-in)."""
     fecha = models.DateField()
     hora = models.PositiveSmallIntegerField()
+    sucursal = models.CharField(max_length=20, choices=SUCURSALES)
+    camilla = models.PositiveSmallIntegerField()
     activo = models.BooleanField(default=True)
 
     class Meta:
-        unique_together = ("fecha", "hora")
-        ordering = ["fecha", "hora"]
+        unique_together = ("fecha", "hora", "sucursal", "camilla")
+        ordering = ["fecha", "hora", "sucursal", "camilla"]
 
     def __str__(self):
-        return f"{self.fecha} {self.hora}:00 - {'✅' if self.activo else '❌'}"
+        return f"{self.fecha} {self.hora}:00 {self.sucursal} C{self.camilla} - {'✅' if self.activo else '❌'}"
 
 
 class Precio(models.Model):

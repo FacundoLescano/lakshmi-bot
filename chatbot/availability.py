@@ -24,21 +24,25 @@ def get_occupied_camillas(dt):
 
 def get_free_camillas(dt):
     occupied = get_occupied_camillas(dt)
-    return [c for c in ALL_CAMILLAS if c not in occupied]
+    free = [c for c in ALL_CAMILLAS if c not in occupied]
+
+    # Opt-in: si existen bloques para ese día, solo permitir celdas activas
+    bloques_dia = BloqueHorario.objects.filter(fecha=dt.date())
+    if bloques_dia.exists():
+        active = set(
+            BloqueHorario.objects.filter(
+                fecha=dt.date(), hora=dt.hour, activo=True,
+            ).values_list("sucursal", "camilla")
+        )
+        free = [c for c in free if c in active]
+
+    return free
 
 
 def is_available(dt):
     if dt.hour < OPENING_HOUR or dt.hour >= CLOSING_HOUR:
         logger.info("is_available(%s) -> hour=%s, outside business hours", dt, dt.hour)
         return False
-
-    # Opt-in: si existen bloques para ese día, el horario debe estar habilitado
-    bloques_dia = BloqueHorario.objects.filter(fecha=dt.date())
-    if bloques_dia.exists():
-        bloque = bloques_dia.filter(hora=dt.hour).first()
-        if bloque is None or not bloque.activo:
-            logger.info("is_available(%s) -> hour=%s, bloque not active", dt, dt.hour)
-            return False
 
     free = get_free_camillas(dt)
     logger.info(
