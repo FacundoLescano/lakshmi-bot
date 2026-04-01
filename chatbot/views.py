@@ -18,7 +18,7 @@ from .availability import (
     suggest_alternatives,
 )
 from .conversation import clear_session, get_session, set_session
-from .models import Memoria, Precio, Reserva, generate_voucher_code
+from .models import Intencionate, Memoria, Precio, Reserva, generate_voucher_code
 from . import intencionate as intencionate_bot
 from .llm_router import route_message
 from .whatsapp import send_interactive_buttons, send_text_message
@@ -46,6 +46,29 @@ DATEPARSER_SETTINGS = {
     "RETURN_AS_TIMEZONE_AWARE": True,
     "RELATIVE_BASE": None,
 }
+
+# Cuestionario de intención para masaje (mismo que intencionate, sin nombre ni hora_integrar)
+MASAJE_QUESTIONS = [
+    "¿Cuál es tu lugar de nacimiento?",
+    "¿Cuál es tu fecha de nacimiento? (ej: 15/03/1990)",
+    "¿Qué estás atravesando hoy?",
+    "¿Qué es lo que más te mueve o te preocupa de esto?",
+    "¿Cómo te estás sintiendo frente a esto?",
+    "¿Dónde lo sentís en el cuerpo?",
+    "¿Cómo está tu energía hoy?",
+    "Si esto se ordenara, ¿qué te gustaría que pase?",
+]
+
+MASAJE_QUESTION_KEYS = [
+    "q_lugar",
+    "q_fecha_nac",
+    "q_atravesando",
+    "q_preocupa",
+    "q_sintiendo",
+    "q_cuerpo",
+    "q_energia",
+    "q_deseo",
+]
 
 
 def normalize_ar_number(number):
@@ -249,8 +272,8 @@ def handle_text(from_number, text, session):
         handle_nuevo_horario(from_number, text, session)
     elif step == "awaiting_voucher_code":
         handle_voucher_code(from_number, text, session)
-    elif step == "awaiting_intencion":
-        handle_intencion(from_number, text, session)
+    elif step and step.startswith("awaiting_mq"):
+        handle_masaje_question(from_number, text, session)
     else:
         reprompt(from_number, session)
 
@@ -473,21 +496,65 @@ def handle_voucher_code(from_number, text, session):
     )
 
 
-# ── Intencion handler ───────────────────────────────────────
+# ── Cuestionario de intención para masaje ────────────────────
 
-def handle_intencion(from_number, text, session):
-    if text:
-        reserva_ids = session.get("reserva_ids", [])
-        # Vinculamos la memoria con la primera reserva (la principal)
-        reserva = None
-        if reserva_ids:
-            reserva = Reserva.objects.filter(id=reserva_ids[0]).first()
+def start_masaje_questionnaire(from_number, session):
+    """Inicia el cuestionario. Salta lugar/fecha si el usuario ya los completó antes."""
+    # Chequear si ya tenemos datos de lugar/fecha (de un cuestionario previo o suscripción)
+    has_prior_data = Memoria.objects.filter(
+        id_user=from_number, context__startswith="[lugar]"
+    ).exists() or Intencionate.objects.filter(
+        telefono=from_number, lugar_nacimiento__gt=""
+    ).exists()
 
-        Memoria.objects.create(
-            id_user=from_number,
-            context=text[:200],
-            reserva=reserva,
-        )
+    if has_prior_data:
+        # Saltear lugar (idx 0) y fecha (idx 1), empezar en pregunta 2
+        session["mq_index"] = 2
+        session["step"] = "awaiting_mq2"
+    else:
+        session["mq_index"] = 0
+        session["step"] = "awaiting_mq0"
+
+    set_session(from_number, session)
+    idx = session["mq_index"]
+    send_text_message(to=from_number, text=MASAJE_QUESTIONS[idx])
+
+
+def handle_masaje_question(from_number, text, session):
+    """Procesa cada respuesta del cuestionario de intención del masaje."""
+    idx = session.get("mq_index", 0)
+    key = MASAJE_QUESTION_KEYS[idx]
+
+    # Guardar respuesta en sesión
+    session[key] = text
+
+    # Guardar en Memoria vinculado a la reserva
+    reserva_ids = session.get("reserva_ids", [])
+    reserva = Reserva.objects.filter(id=reserva_ids[0]).first() if reserva_ids else None
+
+    # Prefijo para lugar/fecha para poder identificarlos después
+    if key == "q_lugar":
+        context = f"[lugar] {text[:190]}"
+    elif key == "q_fecha_nac":
+        context = f"[fecha_nac] {text[:185]}"
+    else:
+        context = text[:200]
+
+    Memoria.objects.create(
+        id_user=from_number,
+        context=context,
+        reserva=reserva,
+    )
+
+    # Siguiente pregunta
+    next_idx = idx + 1
+    if next_idx < len(MASAJE_QUESTIONS):
+        session["mq_index"] = next_idx
+        session["step"] = f"awaiting_mq{next_idx}"
+        set_session(from_number, session)
+        send_text_message(to=from_number, text=MASAJE_QUESTIONS[next_idx])
+    else:
+        # Cuestionario terminado
         send_text_message(
             to=from_number,
             text=(
@@ -496,12 +563,7 @@ def handle_intencion(from_number, text, session):
                 "¡Te esperamos en Lakshmi!"
             ),
         )
-    else:
-        send_text_message(
-            to=from_number,
-            text="¡Te esperamos en Lakshmi!",
-        )
-    clear_session(from_number)
+        clear_session(from_number)
 
 
 # ── Button handler ───────────────────────────────────────────
@@ -751,16 +813,7 @@ def handle_button(from_number, button_id, session):
     # Intencionar masaje
     if step == "awaiting_intencionar":
         if button_id == "intencionar_si":
-            session["step"] = "awaiting_intencion"
-            set_session(from_number, session)
-            send_text_message(
-                to=from_number,
-                text=(
-                    "Contanos brevemente cuál es tu situación actual "
-                    "o por qué necesitás el masaje. Esto nos ayuda a "
-                    "personalizar los aceites para tu sesión."
-                ),
-            )
+            start_masaje_questionnaire(from_number, session)
             return
         if button_id == "intencionar_no":
             send_text_message(
@@ -1213,11 +1266,10 @@ def reprompt(from_number, session):
             to=from_number,
             text="Por favor enviá el código de tu voucher.",
         )
-    elif step == "awaiting_intencion":
-        send_text_message(
-            to=from_number,
-            text="Contanos brevemente tu situación o escribí 'finalizar' para terminar.",
-        )
+    elif step and step.startswith("awaiting_mq"):
+        idx = session.get("mq_index", 0)
+        if idx < len(MASAJE_QUESTIONS):
+            send_text_message(to=from_number, text=MASAJE_QUESTIONS[idx])
     elif step == "awaiting_nuevo_horario":
         send_text_message(
             to=from_number,

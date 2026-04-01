@@ -90,6 +90,20 @@ class Intencionate(models.Model):
         return f"{self.nombre} ({self.telefono}) - {self.tipo_plan}"
 
 
+class BloqueHorario(models.Model):
+    """Define qué horas están habilitadas para reservar (opt-in)."""
+    fecha = models.DateField()
+    hora = models.PositiveSmallIntegerField()
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = ("fecha", "hora")
+        ordering = ["fecha", "hora"]
+
+    def __str__(self):
+        return f"{self.fecha} {self.hora}:00 - {'✅' if self.activo else '❌'}"
+
+
 class Precio(models.Model):
     duracion = models.PositiveIntegerField(unique=True)
     precio = models.PositiveIntegerField()

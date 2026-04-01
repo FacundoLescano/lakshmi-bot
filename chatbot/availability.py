@@ -2,7 +2,7 @@ import logging
 import random
 from datetime import timedelta
 
-from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, Precio, Reserva
+from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, BloqueHorario, Precio, Reserva
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,14 @@ def is_available(dt):
     if dt.hour < OPENING_HOUR or dt.hour >= CLOSING_HOUR:
         logger.info("is_available(%s) -> hour=%s, outside business hours", dt, dt.hour)
         return False
+
+    # Opt-in: si existen bloques para ese día, el horario debe estar habilitado
+    bloques_dia = BloqueHorario.objects.filter(fecha=dt.date())
+    if bloques_dia.exists():
+        bloque = bloques_dia.filter(hora=dt.hour).first()
+        if bloque is None or not bloque.activo:
+            logger.info("is_available(%s) -> hour=%s, bloque not active", dt, dt.hour)
+            return False
 
     free = get_free_camillas(dt)
     logger.info(

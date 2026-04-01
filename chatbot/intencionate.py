@@ -3,7 +3,7 @@ from datetime import datetime
 
 from .conversation import clear_session, get_session, set_session
 from .llm_chat import chat_response, deepen_message
-from .models import Intencionate, Memoria
+from .models import Intencionate, Memoria, Reserva
 from .whatsapp import send_interactive_buttons, send_text_message
 
 logger = logging.getLogger(__name__)
@@ -258,8 +258,55 @@ def handle_button(from_number, button_id, session):
 
     # ── Suscribirse / No ──
     if button_id == "int_suscribir_si":
-        session["step"] = "int_awaiting_nombre"
         session["bot"] = "intencionate"
+
+        # Chequear si ya completó cuestionario en masaje
+        has_lugar = Memoria.objects.filter(
+            id_user=from_number, context__startswith="[lugar]"
+        ).exists()
+        has_fecha = Memoria.objects.filter(
+            id_user=from_number, context__startswith="[fecha_nac]"
+        ).exists()
+        has_cuestionario = Memoria.objects.filter(
+            id_user=from_number, context__startswith="[lugar]"
+        ).exists() and Memoria.objects.filter(
+            id_user=from_number,
+        ).exclude(
+            context__startswith="[lugar]"
+        ).exclude(
+            context__startswith="[fecha_nac]"
+        ).exclude(
+            context__startswith="[experiencia]"
+        ).count() >= 6  # 6 preguntas emocionales
+
+        if has_cuestionario and has_lugar and has_fecha:
+            # Ya completó todo en masaje, ir directo a plan
+            # Obtener datos de Memoria
+            lugar_mem = Memoria.objects.filter(id_user=from_number, context__startswith="[lugar]").first()
+            fecha_mem = Memoria.objects.filter(id_user=from_number, context__startswith="[fecha_nac]").first()
+            session["int_lugar"] = lugar_mem.context.replace("[lugar] ", "") if lugar_mem else ""
+            session["int_fecha_nac"] = fecha_mem.context.replace("[fecha_nac] ", "") if fecha_mem else ""
+            # Necesitamos el nombre de la reserva
+            reserva = Reserva.objects.filter(telefono=from_number).order_by("-id").first()
+            session["int_nombre"] = reserva.nombre if reserva else ""
+            session["step"] = "int_awaiting_plan"
+            set_session(from_number, session)
+            send_text_message(
+                to=from_number,
+                text="Ya tenemos tus datos de un cuestionario anterior. ¡Elegí tu plan!",
+            )
+            send_interactive_buttons(
+                to=from_number,
+                body_text=(
+                    "🌱 *Básico* - $15.000/mes (1 experiencia diaria)\n"
+                    "🌿 *Intermedio* - $25.000/mes (3 experiencias diarias)\n"
+                    "🌳 *Premium* - $40.000/mes (5 experiencias diarias)"
+                ),
+                buttons=PLAN_BUTTONS,
+            )
+            return
+
+        session["step"] = "int_awaiting_nombre"
         set_session(from_number, session)
         send_text_message(to=from_number, text="¡Genial! ¿Cuál es tu nombre completo?")
         return
