@@ -2,7 +2,7 @@ import logging
 import random
 from datetime import timedelta
 
-from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, BloqueHorario, Precio, Reserva
+from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, Precio, Reserva
 
 logger = logging.getLogger(__name__)
 
@@ -24,19 +24,7 @@ def get_occupied_camillas(dt):
 
 def get_free_camillas(dt):
     occupied = get_occupied_camillas(dt)
-    free = [c for c in ALL_CAMILLAS if c not in occupied]
-
-    # Opt-in: si existen bloques para ese día, solo permitir celdas activas
-    bloques_dia = BloqueHorario.objects.filter(fecha=dt.date())
-    if bloques_dia.exists():
-        active = set(
-            BloqueHorario.objects.filter(
-                fecha=dt.date(), hora=dt.hour, activo=True,
-            ).values_list("sucursal", "camilla")
-        )
-        free = [c for c in free if c in active]
-
-    return free
+    return [c for c in ALL_CAMILLAS if c not in occupied]
 
 
 def is_available(dt):
