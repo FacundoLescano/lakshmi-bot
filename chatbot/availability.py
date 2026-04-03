@@ -22,24 +22,25 @@ def get_occupied_camillas(dt):
     return set(reservas)
 
 
-def get_blocked_sucursales(dt):
-    """Returns a set of blocked sucursales for dt, or None if all are blocked."""
-    qs = HorarioNoDisponible.objects.filter(fecha_hora=dt)
-    if qs.filter(sucursal__isnull=True).exists():
-        return None  # bloqueo global
-    return set(qs.values_list("sucursal", flat=True))
-
-
 def get_free_camillas(dt):
-    blocked = get_blocked_sucursales(dt)
-    if blocked is None:
-        return []  # bloqueo global: ninguna camilla disponible
+    qs = HorarioNoDisponible.objects.filter(fecha_hora=dt)
+
+    # Bloqueo global (sucursal=null)
+    if qs.filter(sucursal__isnull=True).exists():
+        return []
+
+    # Construir set de (sucursal, camilla) bloqueadas manualmente
+    bloqueadas = set()
+    for bloqueo in qs:
+        if bloqueo.camilla is None:
+            # Bloqueo de toda la sucursal: agregar sus 4 camillas
+            for cam in range(1, CAMILLAS_POR_SUCURSAL + 1):
+                bloqueadas.add((bloqueo.sucursal, cam))
+        else:
+            bloqueadas.add((bloqueo.sucursal, bloqueo.camilla))
 
     occupied = get_occupied_camillas(dt)
-    return [
-        c for c in ALL_CAMILLAS
-        if c not in occupied and c[0] not in blocked
-    ]
+    return [c for c in ALL_CAMILLAS if c not in occupied and c not in bloqueadas]
 
 
 def is_available(dt):

@@ -99,16 +99,18 @@ class HorarioNoDisponible(models.Model):
         null=True,
         blank=True,
     )
+    camilla = models.PositiveSmallIntegerField(null=True, blank=True)
     motivo = models.CharField(max_length=200, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = [("fecha_hora", "sucursal")]
+        unique_together = [("fecha_hora", "sucursal", "camilla")]
         ordering = ["fecha_hora"]
 
     def __str__(self):
         suc = self.sucursal or "todas las sucursales"
-        return f"Bloqueado: {self.fecha_hora} — {suc}"
+        cam = f" C{self.camilla}" if self.camilla else ""
+        return f"Bloqueado: {self.fecha_hora} — {suc}{cam}"
 
 
 class Precio(models.Model):

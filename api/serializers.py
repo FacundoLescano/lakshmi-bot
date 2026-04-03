@@ -32,5 +32,5 @@ class PrecioSerializer(serializers.ModelSerializer):
 class HorarioNoDisponibleSerializer(serializers.ModelSerializer):
     class Meta:
         model = HorarioNoDisponible
-        fields = ["id", "fecha_hora", "sucursal", "motivo", "created_at"]
+        fields = ["id", "fecha_hora", "sucursal", "camilla", "motivo", "created_at"]
         read_only_fields = ["id", "created_at"]
