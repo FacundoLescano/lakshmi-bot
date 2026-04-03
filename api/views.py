@@ -1,8 +1,9 @@
 from rest_framework import viewsets
 
-from chatbot.models import Intencionate, Memoria, Precio, Reserva
+from chatbot.models import HorarioNoDisponible, Intencionate, Memoria, Precio, Reserva
 
 from .serializers import (
+    HorarioNoDisponibleSerializer,
     IntencionateSerializer,
     MemoriaSerializer,
     PrecioSerializer,
@@ -28,3 +29,15 @@ class IntencionateViewSet(viewsets.ModelViewSet):
 class PrecioViewSet(viewsets.ModelViewSet):
     queryset = Precio.objects.all().order_by("duracion")
     serializer_class = PrecioSerializer
+
+
+class HorarioNoDisponibleViewSet(viewsets.ModelViewSet):
+    queryset = HorarioNoDisponible.objects.all()
+    serializer_class = HorarioNoDisponibleSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        fecha = self.request.query_params.get("fecha")
+        if fecha:
+            qs = qs.filter(fecha_hora__date=fecha)
+        return qs

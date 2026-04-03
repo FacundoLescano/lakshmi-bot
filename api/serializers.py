@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from chatbot.models import Intencionate, Memoria, Precio, Reserva
+from chatbot.models import HorarioNoDisponible, Intencionate, Memoria, Precio, Reserva
 
 
 class MemoriaSerializer(serializers.ModelSerializer):
@@ -27,3 +27,10 @@ class PrecioSerializer(serializers.ModelSerializer):
     class Meta:
         model = Precio
         fields = "__all__"
+
+
+class HorarioNoDisponibleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HorarioNoDisponible
+        fields = ["id", "fecha_hora", "sucursal", "motivo", "created_at"]
+        read_only_fields = ["id", "created_at"]

@@ -91,6 +91,26 @@ class Intencionate(models.Model):
 
 
 
+class HorarioNoDisponible(models.Model):
+    fecha_hora = models.DateTimeField()
+    sucursal = models.CharField(
+        max_length=20,
+        choices=SUCURSALES,
+        null=True,
+        blank=True,
+    )
+    motivo = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("fecha_hora", "sucursal")]
+        ordering = ["fecha_hora"]
+
+    def __str__(self):
+        suc = self.sucursal or "todas las sucursales"
+        return f"Bloqueado: {self.fecha_hora} — {suc}"
+
+
 class Precio(models.Model):
     duracion = models.PositiveIntegerField(unique=True)
     precio = models.PositiveIntegerField()

@@ -2,7 +2,7 @@ import logging
 import random
 from datetime import timedelta
 
-from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, Precio, Reserva
+from .models import ALL_CAMILLAS, CAMILLAS_POR_SUCURSAL, SUCURSALES, HorarioNoDisponible, Precio, Reserva
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,24 @@ def get_occupied_camillas(dt):
     return set(reservas)
 
 
+def get_blocked_sucursales(dt):
+    """Returns a set of blocked sucursales for dt, or None if all are blocked."""
+    qs = HorarioNoDisponible.objects.filter(fecha_hora=dt)
+    if qs.filter(sucursal__isnull=True).exists():
+        return None  # bloqueo global
+    return set(qs.values_list("sucursal", flat=True))
+
+
 def get_free_camillas(dt):
+    blocked = get_blocked_sucursales(dt)
+    if blocked is None:
+        return []  # bloqueo global: ninguna camilla disponible
+
     occupied = get_occupied_camillas(dt)
-    return [c for c in ALL_CAMILLAS if c not in occupied]
+    return [
+        c for c in ALL_CAMILLAS
+        if c not in occupied and c[0] not in blocked
+    ]
 
 
 def is_available(dt):
