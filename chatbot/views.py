@@ -18,7 +18,7 @@ from .availability import (
     suggest_alternatives,
 )
 from .conversation import clear_session, get_session, set_session
-from .models import Intencionate, Memoria, Precio, Reserva, generate_voucher_code
+from .models import ConfiguracionSistema, Intencionate, Memoria, Precio, Reserva, generate_voucher_code
 from . import intencionate as intencionate_bot
 from .llm_router import route_message
 from .whatsapp import send_interactive_buttons, send_text_message
@@ -26,6 +26,11 @@ from .whatsapp import send_interactive_buttons, send_text_message
 logger = logging.getLogger(__name__)
 
 ADMIN_CODE = "Usuario admin intencionate 27326"
+CBU_DEFAULT = "0000000000000000000000"
+
+
+def get_cbu():
+    return ConfiguracionSistema.get("cbu", CBU_DEFAULT)
 
 DURACION_BUTTONS = [
     {"id": "dur_60", "title": "60 minutos"},
@@ -263,6 +268,9 @@ def handle_text(from_number, text, session):
     if step == "admin_awaiting_nuevo_precio":
         admin_set_precio(from_number, text, session)
         return
+    if step == "admin_awaiting_nuevo_cbu":
+        admin_set_cbu(from_number, text)
+        return
 
     if step == "awaiting_nombre":
         handle_nombre(from_number, text, session)
@@ -327,6 +335,8 @@ def handle_file(from_number, session):
 
     if step == "awaiting_comprobante":
         handle_comprobante_received(from_number, session)
+    elif step == "awaiting_comprobante_reserva":
+        handle_comprobante_reserva_received(from_number, session)
     else:
         reprompt(from_number, session)
 
@@ -353,17 +363,40 @@ def handle_comprobante_received(from_number, session):
     send_text_message(
         to=from_number,
         text=(
-            f"🎁 *Voucher de regalo*\n\n"
-            f"¡Comprobante recibido! Tu voucher está listo.\n\n"
-            f"🎫 Código: *{voucher_code}*\n"
-            f"💆 Duración: {duracion} minutos\n"
-            f"👥 {'Pareja' if es_pareja else 'Individual'}\n\n"
-            f"La persona que reciba el regalo puede canjearlo "
-            f"escribiéndonos y seleccionando 'Tengo un voucher'.\n\n"
-            f"¡Gracias por elegir Lakshmi!"
+            f"🎁 *Tenés un regalo especial...*\n\n"
+            f"Alguien pensó en vos y te regaló un momento de bienestar ✨\n\n"
+            f"💆 *Duración:* {duracion} minutos de relajación\n"
+            f"👥 *Modalidad:* {'Para compartir en pareja' if es_pareja else 'Para disfrutar de forma individual'}\n\n"
+            f"🌿 Este voucher es una invitación a desconectar, relajarte y regalarte un tiempo para vos.\n\n"
+            f"🎫 *Código:* {voucher_code}\n\n"
+            f"📲 Cuando quieras usarlo, solo tenés que escribirnos y seleccionar *“Tengo un voucher”* para coordinar tu turno.\n\n"
+            f"💫 Te esperamos en Lakshmi para vivir una experiencia única."
         ),
     )
     clear_session(from_number)
+
+
+def handle_comprobante_reserva_received(from_number, session):
+    send_text_message(
+        to=from_number,
+        text=(
+            "✨ *Antes de tu experiencia*\n\n"
+            "Tu turno fue preparado especialmente para vos.\n\n"
+            "Si necesitás reprogramar o cancelar, te pedimos hacerlo con al menos 24 hs de anticipación, "
+            "para poder ofrecer ese espacio con el mismo cuidado.\n\n"
+            "Las cancelaciones o modificaciones el mismo día no son posibles, ya que el turno queda "
+            "reservado exclusivamente para vos.\n\n"
+            "En caso de llegar más tarde, la sesión se realizará dentro del tiempo disponible, "
+            "para respetar la armonía de la agenda.\n\n"
+            "Gracias por acompañar este cuidado y por tu comprensión ✨\n\n"
+            "📍 Fitz Roy 1925 · Timbre 602\n"
+            "🚪 Empujar la puerta\n"
+            "Piso 6"
+        ),
+    )
+    session["step"] = "awaiting_intencionar"
+    set_session(from_number, session)
+    ask_intencionar(from_number)
 
 
 # ── Horario parsing & handling ───────────────────────────────
@@ -597,6 +630,10 @@ def handle_button(from_number, button_id, session):
 
     if button_id.startswith("admin_precio_"):
         admin_select_duracion(from_number, button_id, session)
+        return
+
+    if button_id == "admin_cbu":
+        admin_show_cbu(from_number)
         return
 
     if button_id == "admin_volver":
@@ -1061,7 +1098,10 @@ def send_welcome(from_number):
             f"💆🏼 Masaje Full (todo lo anterior + piedras calientes) 120 minutos ${p120:,}\n\n"
             "➡️ Los precios son por persona.\n"
             "➡️ Aceptamos todas las formas de pago.\n"
-            "➡️ Abiertos todos los días, hasta las 22 hs."
+            "➡️ Abiertos todos los días, hasta las 22 hs.\n"
+            "📍 Fitz Roy 1925 · Timbre 602\n"  
+            "🚪 Empujar la puerta\n"  
+            "Piso 6\n"
         ),
         buttons=[
             {"id": "btn_reserva", "title": "Reservar"},
@@ -1087,7 +1127,7 @@ def send_payment_info(from_number, session):
         text=(
             f"💰 El precio total es ${precio:,}\n\n"
             f"Realizá la transferencia al siguiente CBU:\n\n"
-            f"🏦 CBU: 0000000000000000000000\n"
+            f"🏦 CBU: {get_cbu()}\n"
             f"👤 Titular: Lakshmi Masajes\n\n"
             f"Envianos el comprobante de transferencia por este mismo chat."
         ),
@@ -1193,25 +1233,24 @@ def save_reserva(from_number, session):
                 f"✅ ¡Reserva confirmada!\n\n"
                 f"Para completar tu reserva, realizá una transferencia de ${adelanto:,} "
                 f"al siguiente CBU:\n\n"
-                f"🏦 CBU: 0000000000000000000000\n"
+                f"🏦 CBU: {get_cbu()}\n"
                 f"👤 Titular: Lakshmi Masajes\n\n"
                 f"Envianos el comprobante por este mismo chat. ¡Te esperamos!"
             ),
         )
 
-        # Offer intencionar
-        session["step"] = "awaiting_intencionar"
+        session["step"] = "awaiting_comprobante_reserva"
         set_session(from_number, session)
-        ask_intencionar(from_number)
 
 
 def ask_intencionar(from_number):
     send_interactive_buttons(
         to=from_number,
         body_text=(
-            "🧘 ¿Querés intencionar tu masaje?\n\n"
-            "Contanos tu situación actual o por qué necesitás el masaje. "
-            "Esto nos permite personalizar los aceites para tu sesión."
+            "🙏 ¿Querés intencionar tu masaje?\n\n"
+            "Entrá un momento en vos"
+            "y contame qué estás necesitando hoy.\n\n"
+            "Eso nos permite preparar tu sesión de manera más precisa."
         ),
         buttons=[
             {"id": "intencionar_si", "title": "Sí, quiero"},
@@ -1256,7 +1295,7 @@ def reprompt(from_number, session):
             to=from_number,
             text="Decime un día y horario. Ejemplo: mañana a las 15",
         )
-    elif step == "awaiting_comprobante":
+    elif step in ("awaiting_comprobante", "awaiting_comprobante_reserva"):
         send_text_message(
             to=from_number,
             text="Envianos el comprobante de transferencia para continuar.",
@@ -1294,6 +1333,7 @@ def start_admin(from_number):
         buttons=[
             {"id": "admin_cancelar", "title": "Cancelar reserva"},
             {"id": "admin_precios", "title": "Modificar precios"},
+            {"id": "admin_cbu", "title": "Modificar CBU"},
         ],
     )
 
@@ -1487,3 +1527,26 @@ def admin_set_precio(from_number, text, session):
         text=f"✅ Precio actualizado: {duracion} min → ${nuevo_precio:,}",
     )
     admin_show_precios(from_number)
+
+
+def admin_show_cbu(from_number):
+    cbu_actual = get_cbu()
+    set_session(from_number, {"bot": "lakshmi", "step": "admin_awaiting_nuevo_cbu", "admin": True})
+    send_text_message(
+        to=from_number,
+        text=f"CBU actual: {cbu_actual}\n\nEnviá el nuevo CBU (solo números):",
+    )
+
+
+def admin_set_cbu(from_number, text):
+    nuevo_cbu = text.strip().replace(" ", "")
+    if not nuevo_cbu.isdigit():
+        send_text_message(to=from_number, text="CBU inválido. Debe contener solo números. Intentá de nuevo:")
+        return
+
+    ConfiguracionSistema.objects.update_or_create(
+        clave="cbu",
+        defaults={"valor": nuevo_cbu},
+    )
+    send_text_message(to=from_number, text=f"✅ CBU actualizado: {nuevo_cbu}")
+    start_admin(from_number)

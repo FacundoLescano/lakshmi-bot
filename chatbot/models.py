@@ -113,6 +113,21 @@ class HorarioNoDisponible(models.Model):
         return f"Bloqueado: {self.fecha_hora} — {suc}{cam}"
 
 
+class ConfiguracionSistema(models.Model):
+    clave = models.CharField(max_length=50, unique=True)
+    valor = models.CharField(max_length=200)
+
+    def __str__(self):
+        return f"{self.clave}: {self.valor}"
+
+    @classmethod
+    def get(cls, clave, default=""):
+        try:
+            return cls.objects.get(clave=clave).valor
+        except cls.DoesNotExist:
+            return default
+
+
 class Precio(models.Model):
     duracion = models.PositiveIntegerField(unique=True)
     precio = models.PositiveIntegerField()
