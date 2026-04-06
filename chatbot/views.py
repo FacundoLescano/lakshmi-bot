@@ -268,6 +268,9 @@ def handle_text(from_number, text, session):
     if step == "admin_awaiting_nuevo_precio":
         admin_set_precio(from_number, text, session)
         return
+    if step == "admin_awaiting_nuevo_precio_int":
+        admin_set_precio_intencionate(from_number, text, session)
+        return
     if step == "admin_awaiting_nuevo_cbu":
         admin_set_cbu(from_number, text)
         return
@@ -612,7 +615,19 @@ def handle_button(from_number, button_id, session):
         return
 
     if button_id == "admin_precios":
+        admin_show_tipo_precios(from_number)
+        return
+
+    if button_id == "admin_precios_masajes":
         admin_show_precios(from_number)
+        return
+
+    if button_id == "admin_precios_intencionate":
+        admin_show_precios_intencionate(from_number)
+        return
+
+    if button_id.startswith("admin_precio_int_"):
+        admin_select_plan_intencionate(from_number, button_id, session)
         return
 
     if button_id.startswith("admin_cancel_"):
@@ -1550,3 +1565,74 @@ def admin_set_cbu(from_number, text):
     )
     send_text_message(to=from_number, text=f"✅ CBU actualizado: {nuevo_cbu}")
     start_admin(from_number)
+
+
+def admin_show_tipo_precios(from_number):
+    set_session(from_number, {"bot": "lakshmi", "step": "admin_tipo_precios", "admin": True})
+    send_interactive_buttons(
+        to=from_number,
+        body_text="¿Qué precios querés modificar?",
+        buttons=[
+            {"id": "admin_precios_masajes",      "title": "Precios masajes"},
+            {"id": "admin_precios_intencionate",  "title": "Precios Intencionate"},
+            {"id": "admin_volver",               "title": "Volver"},
+        ],
+    )
+
+
+def admin_show_precios_intencionate(from_number):
+    from .intencionate import get_int_prices
+    prices = get_int_prices()
+    lines = (
+        f"• Básico → ${prices['basico']:,}/mes\n"
+        f"• Intermedio → ${prices['intermedio']:,}/mes\n"
+        f"• Premium → ${prices['premium']:,}/mes"
+    )
+    set_session(from_number, {"bot": "lakshmi", "step": "admin_precios_int", "admin": True})
+    send_interactive_buttons(
+        to=from_number,
+        body_text=f"Precios actuales de Intencionate:\n\n{lines}\n\n¿Cuál querés modificar?",
+        buttons=[
+            {"id": "admin_precio_int_basico",      "title": "Básico"},
+            {"id": "admin_precio_int_intermedio",   "title": "Intermedio"},
+            {"id": "admin_precio_int_premium",      "title": "Premium"},
+        ],
+    )
+
+
+def admin_select_plan_intencionate(from_number, button_id, session):
+    from .intencionate import get_int_prices
+    plan = button_id.replace("admin_precio_int_", "")
+    prices = get_int_prices()
+    precio_actual = prices.get(plan, 0)
+    session = {
+        "bot": "lakshmi",
+        "step": "admin_awaiting_nuevo_precio_int",
+        "admin": True,
+        "admin_int_plan": plan,
+    }
+    set_session(from_number, session)
+    send_text_message(
+        to=from_number,
+        text=f"Precio actual del plan {plan.capitalize()}: ${precio_actual:,}/mes\n\nEnviá el nuevo precio (solo números, ej: 20000):",
+    )
+
+
+def admin_set_precio_intencionate(from_number, text, session):
+    plan = session.get("admin_int_plan")
+    try:
+        nuevo_precio = int(text.strip().replace(".", "").replace(",", "").replace("$", ""))
+    except ValueError:
+        send_text_message(to=from_number, text="Precio inválido. Enviá solo números, ej: 20000")
+        return
+
+    clave = f"int_precio_{plan}"
+    ConfiguracionSistema.objects.update_or_create(
+        clave=clave,
+        defaults={"valor": str(nuevo_precio)},
+    )
+    send_text_message(
+        to=from_number,
+        text=f"✅ Precio del plan {plan.capitalize()} actualizado: ${nuevo_precio:,}/mes",
+    )
+    admin_show_precios_intencionate(from_number)

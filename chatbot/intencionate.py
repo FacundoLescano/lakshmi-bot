@@ -1,24 +1,20 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .conversation import clear_session, get_session, set_session
 from .llm_chat import chat_response, deepen_message
-from .models import Intencionate, Memoria, Reserva
+from .models import ConfiguracionSistema, Intencionate, Memoria, Reserva
 from .whatsapp import send_interactive_buttons, send_text_message
 
 logger = logging.getLogger(__name__)
 
-PLAN_BUTTONS = [
-    {"id": "int_plan_basico", "title": "Básico - $15.000"},
-    {"id": "int_plan_intermedio", "title": "Intermedio - $25.000"},
-    {"id": "int_plan_premium", "title": "Premium - $40.000"},
-]
+PLAN_EXPERIENCIAS = {"basico": 1, "intermedio": 3, "premium": 5}
 
-PLAN_MAP = {
-    "int_plan_basico": ("basico", 15000, 1),
-    "int_plan_intermedio": ("intermedio", 25000, 3),
-    "int_plan_premium": ("premium", 40000, 5),
-}
+SATISFACCION_BUTTONS = [
+    {"id": "sat_muy_bien", "title": "Me entendió muy bien"},
+    {"id": "sat_sentido", "title": "Tiene sentido"},
+    {"id": "sat_no_representa", "title": "No me representa"},
+]
 
 # Preguntas del cuestionario de suscripción
 SUBSCRIPTION_QUESTIONS = [
@@ -41,11 +37,29 @@ QUESTION_KEYS = [
     "hora_integrar",
 ]
 
-SATISFACCION_BUTTONS = [
-    {"id": "sat_muy_bien", "title": "Me entendió muy bien"},
-    {"id": "sat_sentido", "title": "Tiene sentido"},
-    {"id": "sat_no_representa", "title": "No me representa"},
-]
+
+# ── Helpers ──────────────────────────────────────────────────
+
+def get_int_prices():
+    """Lee precios de planes desde DB con fallback a valores por defecto."""
+    return {
+        "basico":      int(ConfiguracionSistema.get("int_precio_basico",      "15000")),
+        "intermedio":  int(ConfiguracionSistema.get("int_precio_intermedio",   "25000")),
+        "premium":     int(ConfiguracionSistema.get("int_precio_premium",      "40000")),
+    }
+
+
+def get_plan_buttons():
+    prices = get_int_prices()
+    return [
+        {"id": "int_plan_basico",      "title": f"Básico ${prices['basico']:,}"},
+        {"id": "int_plan_intermedio",  "title": f"Intermedio ${prices['intermedio']:,}"},
+        {"id": "int_plan_premium",     "title": f"Premium ${prices['premium']:,}"},
+    ]
+
+
+def get_cbu():
+    return ConfiguracionSistema.get("cbu", "0000000000000000000000")
 
 
 def get_user_info(sub: Intencionate) -> dict:
@@ -71,8 +85,7 @@ def get_daily_usage_count(phone: str) -> int:
 
 
 def get_plan_limit(plan: str) -> int:
-    limits = {"basico": 1, "intermedio": 3, "premium": 5}
-    return limits.get(plan, 1)
+    return PLAN_EXPERIENCIAS.get(plan, 1)
 
 
 # ── Entry point ──────────────────────────────────────────────
@@ -134,7 +147,6 @@ def handle_text(from_number, text, session):
         key = QUESTION_KEYS[q_index]
         session[key] = text
 
-        # Guardar respuesta en Memoria (excepto hora_integrar)
         if key != "hora_integrar":
             Memoria.objects.create(id_user=from_number, context=text[:200])
 
@@ -145,30 +157,43 @@ def handle_text(from_number, text, session):
             set_session(from_number, session)
             send_text_message(to=from_number, text=SUBSCRIPTION_QUESTIONS[next_index])
         else:
-            # Cuestionario terminado, pedir plan
             session["step"] = "int_awaiting_plan"
             set_session(from_number, session)
+            prices = get_int_prices()
             send_interactive_buttons(
                 to=from_number,
                 body_text=(
                     "¡Gracias por compartir! Ahora elegí tu plan:\n\n"
-                    "🌱 *Básico* - $15.000/mes (1 experiencia diaria)\n"
-                    "🌿 *Intermedio* - $25.000/mes (3 experiencias diarias)\n"
-                    "🌳 *Premium* - $40.000/mes (5 experiencias diarias)"
+                    f"🌱 *Básico* - ${prices['basico']:,}/mes (1 experiencia diaria)\n"
+                    f"🌿 *Intermedio* - ${prices['intermedio']:,}/mes (3 experiencias diarias)\n"
+                    f"🌳 *Premium* - ${prices['premium']:,}/mes (5 experiencias diarias)"
                 ),
-                buttons=PLAN_BUTTONS,
+                buttons=get_plan_buttons(),
             )
+        return
+
+    # ── Menú principal para usuarios suscriptos ──
+    # (las opciones son botones, no texto — si llega texto acá es un caso inesperado)
+    if step == "int_menu":
+        send_welcome_suscripto(from_number)
+        return
+
+    # ── Menú cambiar plan ──
+    if step == "int_menu_cambiar_plan":
+        handle_menu_cambiar_plan(from_number, text, session)
         return
 
     # ── Flujo "Intenciona tu experiencia" ──
     if step == "int_experiencia_chat":
-        sub = Intencionate.objects.get(telefono=from_number)
-        memories = get_recent_memories(from_number)
+        try:
+            sub = Intencionate.objects.get(telefono=from_number)
+        except Intencionate.DoesNotExist:
+            send_welcome_intencionate(from_number)
+            return
 
-        # Guardar el mensaje del usuario
+        memories = get_recent_memories(from_number)
         Memoria.objects.create(id_user=from_number, context=f"[experiencia] {text[:185]}")
 
-        # Generar respuesta con LLM
         user_info = get_user_info(sub)
         response = chat_response(text, user_info, memories)
 
@@ -189,13 +214,15 @@ def handle_text(from_number, text, session):
 
     # ── Respuesta del usuario después del mensaje diario ──
     if step == "int_daily_responded":
-        sub = Intencionate.objects.get(telefono=from_number)
-        memories = get_recent_memories(from_number)
+        try:
+            sub = Intencionate.objects.get(telefono=from_number)
+        except Intencionate.DoesNotExist:
+            clear_session(from_number)
+            return
 
-        # Guardar respuesta del usuario
+        memories = get_recent_memories(from_number)
         Memoria.objects.create(id_user=from_number, context=text[:200])
 
-        # Responder con LLM
         user_info = get_user_info(sub)
         response = chat_response(text, user_info, memories)
 
@@ -203,48 +230,65 @@ def handle_text(from_number, text, session):
         clear_session(from_number)
         return
 
-    # ── Si el usuario tiene suscripción activa y manda texto libre ──
+    # ── Entry point: usuario sin sesión activa ──
     try:
         sub = Intencionate.objects.get(telefono=from_number, activo=True)
+        # Usuario suscripto → mostrar menú de bienvenida
+        send_welcome_suscripto(from_number)
     except Intencionate.DoesNotExist:
         send_welcome_intencionate(from_number)
-        return
 
-    # Iniciar flujo "Intenciona tu experiencia"
-    usage = get_daily_usage_count(from_number)
-    limit = get_plan_limit(sub.tipo_plan)
 
-    if usage >= limit:
+def handle_menu_cambiar_plan(from_number, text, session):
+    prices = get_int_prices()
+    opcion = text.strip()
+
+    plan_map = {
+        "1": ("basico",     prices["basico"]),
+        "2": ("intermedio", prices["intermedio"]),
+        "3": ("premium",    prices["premium"]),
+    }
+
+    if opcion in plan_map:
+        nuevo_plan, precio = plan_map[opcion]
+        session["int_nuevo_plan"] = nuevo_plan
+        session["int_precio"] = precio
+        session["step"] = "int_awaiting_comprobante_cambio_plan"
+        set_session(from_number, session)
         send_text_message(
             to=from_number,
             text=(
-                f"Ya usaste tus {limit} experiencia(s) de hoy según tu plan {sub.tipo_plan}. "
-                "¡Mañana podés volver a conectar!"
+                f"Cambiás al plan *{nuevo_plan.capitalize()}* — ${precio:,}/mes\n\n"
+                f"Realizá la transferencia al siguiente CBU:\n\n"
+                f"🏦 CBU: {get_cbu()}\n"
+                f"👤 Titular: Intencionate\n\n"
+                f"Envianos el comprobante por este mismo chat."
             ),
         )
-        clear_session(from_number)
         return
 
-    memories = get_recent_memories(from_number)
-    user_info = get_user_info(sub)
+    if opcion == "4":
+        # Cancelar suscripción
+        session["step"] = "int_confirm_cancelar"
+        set_session(from_number, session)
+        send_interactive_buttons(
+            to=from_number,
+            body_text="¿Confirmás que querés cancelar tu suscripción?",
+            buttons=[
+                {"id": "int_cancelar_confirm", "title": "Sí, cancelar"},
+                {"id": "int_cancelar_abort", "title": "No, volver"},
+            ],
+        )
+        return
 
-    Memoria.objects.create(id_user=from_number, context=f"[experiencia] {text[:185]}")
+    if opcion == "5":
+        clear_session(from_number)
+        send_text_message(to=from_number, text="¡Hasta pronto! Estamos acá cuando lo necesites. 🙏")
+        return
 
-    response = chat_response(text, user_info, memories)
-
-    session["bot"] = "intencionate"
-    session["last_llm_message"] = response
-    session["step"] = "int_experiencia_responded"
-    set_session(from_number, session)
-
-    send_text_message(to=from_number, text=response)
-    send_interactive_buttons(
+    send_text_message(
         to=from_number,
-        body_text="¿Querés profundizar en esto?",
-        buttons=[
-            {"id": "int_profundizar_exp", "title": "Profundizar"},
-            {"id": "int_finalizar_exp", "title": "Finalizar"},
-        ],
+        text="Por favor respondé con un número del 1 al 5.",
     )
 
 
@@ -260,16 +304,13 @@ def handle_button(from_number, button_id, session):
     if button_id == "int_suscribir_si":
         session["bot"] = "intencionate"
 
-        # Chequear si ya completó cuestionario en masaje
         has_lugar = Memoria.objects.filter(
             id_user=from_number, context__startswith="[lugar]"
         ).exists()
         has_fecha = Memoria.objects.filter(
             id_user=from_number, context__startswith="[fecha_nac]"
         ).exists()
-        has_cuestionario = Memoria.objects.filter(
-            id_user=from_number, context__startswith="[lugar]"
-        ).exists() and Memoria.objects.filter(
+        has_cuestionario = has_lugar and Memoria.objects.filter(
             id_user=from_number,
         ).exclude(
             context__startswith="[lugar]"
@@ -277,16 +318,13 @@ def handle_button(from_number, button_id, session):
             context__startswith="[fecha_nac]"
         ).exclude(
             context__startswith="[experiencia]"
-        ).count() >= 6  # 6 preguntas emocionales
+        ).count() >= 6
 
         if has_cuestionario and has_lugar and has_fecha:
-            # Ya completó todo en masaje, ir directo a plan
-            # Obtener datos de Memoria
             lugar_mem = Memoria.objects.filter(id_user=from_number, context__startswith="[lugar]").first()
             fecha_mem = Memoria.objects.filter(id_user=from_number, context__startswith="[fecha_nac]").first()
             session["int_lugar"] = lugar_mem.context.replace("[lugar] ", "") if lugar_mem else ""
             session["int_fecha_nac"] = fecha_mem.context.replace("[fecha_nac] ", "") if fecha_mem else ""
-            # Necesitamos el nombre de la reserva
             reserva = Reserva.objects.filter(telefono=from_number).order_by("-id").first()
             session["int_nombre"] = reserva.nombre if reserva else ""
             session["step"] = "int_awaiting_plan"
@@ -295,14 +333,15 @@ def handle_button(from_number, button_id, session):
                 to=from_number,
                 text="Ya tenemos tus datos de un cuestionario anterior. ¡Elegí tu plan!",
             )
+            prices = get_int_prices()
             send_interactive_buttons(
                 to=from_number,
                 body_text=(
-                    "🌱 *Básico* - $15.000/mes (1 experiencia diaria)\n"
-                    "🌿 *Intermedio* - $25.000/mes (3 experiencias diarias)\n"
-                    "🌳 *Premium* - $40.000/mes (5 experiencias diarias)"
+                    f"🌱 *Básico* - ${prices['basico']:,}/mes (1 experiencia diaria)\n"
+                    f"🌿 *Intermedio* - ${prices['intermedio']:,}/mes (3 experiencias diarias)\n"
+                    f"🌳 *Premium* - ${prices['premium']:,}/mes (5 experiencias diarias)"
                 ),
-                buttons=PLAN_BUTTONS,
+                buttons=get_plan_buttons(),
             )
             return
 
@@ -319,9 +358,54 @@ def handle_button(from_number, button_id, session):
         clear_session(from_number)
         return
 
-    # ── Selección de plan ──
-    if step == "int_awaiting_plan" and button_id in PLAN_MAP:
-        plan_key, precio, _ = PLAN_MAP[button_id]
+    # ── Botones del menú principal (usuario suscripto) ──
+    if button_id == "int_menu_experiencia":
+        usage = get_daily_usage_count(from_number)
+        try:
+            sub = Intencionate.objects.get(telefono=from_number, activo=True)
+            limit = get_plan_limit(sub.tipo_plan)
+        except Intencionate.DoesNotExist:
+            send_welcome_intencionate(from_number)
+            return
+
+        if usage >= limit:
+            send_text_message(
+                to=from_number,
+                text=(
+                    f"Ya usaste tus {limit} experiencia(s) de hoy según tu plan "
+                    f"{sub.tipo_plan}. ¡Mañana podés volver a conectar!"
+                ),
+            )
+            clear_session(from_number)
+            return
+
+        session["step"] = "int_experiencia_chat"
+        set_session(from_number, session)
+        send_text_message(
+            to=from_number,
+            text="Contame, ¿qué experiencia querés intencionar? (reunión, proyecto, vínculo, etc.)",
+        )
+        return
+
+    if button_id == "int_menu_masaje":
+        from .views import send_welcome
+        send_welcome(from_number)
+        return
+
+    if button_id == "int_menu_suscripcion":
+        try:
+            sub = Intencionate.objects.get(telefono=from_number)
+        except Intencionate.DoesNotExist:
+            send_welcome_intencionate(from_number)
+            return
+        show_estado_suscripcion(from_number, sub, session)
+        return
+
+    # ── Selección de plan (nueva suscripción) ──
+    if step == "int_awaiting_plan" and button_id in ("int_plan_basico", "int_plan_intermedio", "int_plan_premium"):
+        plan_key = button_id.replace("int_plan_", "")
+        prices = get_int_prices()
+        precio = prices[plan_key]
         session["int_plan"] = plan_key
         session["int_precio"] = precio
         session["step"] = "int_awaiting_comprobante"
@@ -331,11 +415,87 @@ def handle_button(from_number, button_id, session):
             text=(
                 f"💰 El precio del plan es ${precio:,}/mes\n\n"
                 f"Realizá la transferencia al siguiente CBU:\n\n"
-                f"🏦 CBU: 0000000000000000000000\n"
+                f"🏦 CBU: {get_cbu()}\n"
                 f"👤 Titular: Intencionate\n\n"
                 f"Envianos el comprobante de transferencia por este mismo chat."
             ),
         )
+        return
+
+    # ── Menú suscripto: Abonar suscripción ──
+    if button_id == "int_abonar":
+        try:
+            sub = Intencionate.objects.get(telefono=from_number)
+        except Intencionate.DoesNotExist:
+            send_welcome_intencionate(from_number)
+            return
+        prices = get_int_prices()
+        precio = prices.get(sub.tipo_plan, 0)
+        session["step"] = "int_awaiting_comprobante_abonar"
+        set_session(from_number, session)
+        send_text_message(
+            to=from_number,
+            text=(
+                f"💰 Monto a abonar: ${precio:,}/mes (plan {sub.tipo_plan.capitalize()})\n\n"
+                f"Realizá la transferencia al siguiente CBU:\n\n"
+                f"🏦 CBU: {get_cbu()}\n"
+                f"👤 Titular: Intencionate\n\n"
+                f"Envianos el comprobante por este mismo chat."
+            ),
+        )
+        return
+
+    # ── Menú suscripto: Cambiar plan ──
+    if button_id == "int_cambiar_plan":
+        prices = get_int_prices()
+        session["step"] = "int_menu_cambiar_plan"
+        set_session(from_number, session)
+        send_text_message(
+            to=from_number,
+            text=(
+                f"Elegí tu nuevo plan:\n\n"
+                f"1 🌱 Básico — ${prices['basico']:,}/mes | 1 experiencia diaria\n"
+                f"2 🌿 Intermedio — ${prices['intermedio']:,}/mes | 3 experiencias diarias\n"
+                f"3 🌳 Premium — ${prices['premium']:,}/mes | 5 experiencias diarias\n"
+                f"4 Cancelar suscripción\n"
+                f"5 Finalizar conversación\n\n"
+                f"Respondé con el número de tu elección."
+            ),
+        )
+        return
+
+    # ── Menú suscripto: Finalizar ──
+    if button_id == "int_finalizar":
+        clear_session(from_number)
+        send_text_message(to=from_number, text="¡Hasta pronto! Estamos acá cuando lo necesites. 🙏")
+        return
+
+    # ── Cancelar suscripción: confirmación ──
+    if button_id == "int_cancelar_confirm":
+        try:
+            sub = Intencionate.objects.get(telefono=from_number)
+            sub.activo = False
+            sub.save()
+            send_text_message(
+                to=from_number,
+                text=(
+                    "Tu suscripción fue cancelada. ✅\n\n"
+                    "Podés volver a activarla cuando quieras escribiéndonos. "
+                    "¡Gracias por haber sido parte de Intencionate! 🙏"
+                ),
+            )
+        except Intencionate.DoesNotExist:
+            send_text_message(to=from_number, text="No encontramos tu suscripción.")
+        clear_session(from_number)
+        return
+
+    if button_id == "int_cancelar_abort":
+        try:
+            sub = Intencionate.objects.get(telefono=from_number)
+        except Intencionate.DoesNotExist:
+            send_welcome_intencionate(from_number)
+            return
+        show_estado_suscripcion(from_number, sub, session)
         return
 
     # ── Profundizar mensaje diario ──
@@ -406,7 +566,6 @@ def handle_button(from_number, button_id, session):
         except Intencionate.DoesNotExist:
             pass
 
-        # Ahora enviar profundización
         original = session.get("last_llm_message", "")
         try:
             sub = Intencionate.objects.get(telefono=from_number)
@@ -422,7 +581,7 @@ def handle_button(from_number, button_id, session):
         clear_session(from_number)
         return
 
-    # ── Profundizar integración (antes de satisfacción) ──
+    # ── Profundizar integración ──
     if button_id == "int_profundizar_integra":
         session["step"] = "int_awaiting_satisfaccion"
         set_session(from_number, session)
@@ -439,7 +598,7 @@ def handle_button(from_number, button_id, session):
         return
 
 
-# ── File handler (comprobante de suscripción) ────────────────
+# ── File handler ─────────────────────────────────────────────
 
 def handle_file(from_number, session):
     if not session:
@@ -447,8 +606,8 @@ def handle_file(from_number, session):
 
     step = session.get("step")
 
+    # ── Comprobante nueva suscripción ──
     if step == "int_awaiting_comprobante":
-        # Crear suscripción
         Intencionate.objects.update_or_create(
             telefono=from_number,
             defaults={
@@ -461,7 +620,6 @@ def handle_file(from_number, session):
                 "hora_integrar": session.get("hora_integrar", "21"),
             },
         )
-
         send_text_message(
             to=from_number,
             text=(
@@ -475,10 +633,80 @@ def handle_file(from_number, session):
         clear_session(from_number)
         return
 
+    # ── Comprobante pago de renovación ──
+    if step == "int_awaiting_comprobante_abonar":
+        try:
+            sub = Intencionate.objects.get(telefono=from_number)
+            sub.activo = True
+            sub.fecha_pago = datetime.now()
+            sub.save()
+            send_text_message(
+                to=from_number,
+                text=(
+                    "✅ ¡Pago registrado! Tu suscripción sigue activa.\n\n"
+                    f"🌿 Plan: {sub.tipo_plan.capitalize()}\n"
+                    "¡Gracias por continuar con Intencionate! 🙏"
+                ),
+            )
+        except Intencionate.DoesNotExist:
+            send_text_message(to=from_number, text="No encontramos tu suscripción.")
+        clear_session(from_number)
+        return
 
-# ── Bienvenida ───────────────────────────────────────────────
+    # ── Comprobante cambio de plan ──
+    if step == "int_awaiting_comprobante_cambio_plan":
+        nuevo_plan = session.get("int_nuevo_plan", "basico")
+        try:
+            sub = Intencionate.objects.get(telefono=from_number)
+            sub.tipo_plan = nuevo_plan
+            sub.activo = True
+            sub.fecha_pago = datetime.now()
+            sub.save()
+            send_text_message(
+                to=from_number,
+                text=(
+                    f"✅ ¡Plan actualizado a {nuevo_plan.capitalize()}!\n\n"
+                    "Tu suscripción sigue activa con el nuevo plan. 🙏"
+                ),
+            )
+        except Intencionate.DoesNotExist:
+            send_text_message(to=from_number, text="No encontramos tu suscripción.")
+        clear_session(from_number)
+        return
+
+
+# ── Pantallas de bienvenida ───────────────────────────────────
+
+def send_welcome_suscripto(from_number):
+    """Menú principal para usuarios con suscripción activa."""
+    set_session(from_number, {"bot": "intencionate", "step": "int_menu"})
+    send_text_message(
+        to=from_number,
+        text=(
+            "Hola ✨ Bienvenido/a a INTENCIONATE\n\n"
+            "Sistema de sincronización personal\n\n"
+            "Antes de avanzar, frená un segundo.\n\n"
+            "Entrá en vos.\n"
+            "Respirá.\n\n"
+            "(Inhalá por nariz… exhalá por boca… 3 veces)\n\n"
+            "Ahora sí.\n\n"
+            "Contame, ¿qué te gustaría intencionar hoy?"
+        ),
+    )
+    send_interactive_buttons(
+        to=from_number,
+        body_text="Estoy para acompañarte.",
+        buttons=[
+            {"id": "int_menu_experiencia", "title": "Intencionar experiencia"},
+            {"id": "int_menu_masaje",      "title": "Reservar masaje"},
+            {"id": "int_menu_suscripcion", "title": "Mi suscripción"},
+        ],
+    )
+
 
 def send_welcome_intencionate(from_number):
+    """Bienvenida para usuarios sin suscripción activa."""
+    prices = get_int_prices()
     set_session(from_number, {"bot": "intencionate", "step": "int_welcome"})
     send_interactive_buttons(
         to=from_number,
@@ -486,12 +714,12 @@ def send_welcome_intencionate(from_number):
             "✨ *Bienvenido/a a Intencionate* ✨\n\n"
             "Intencionate es un servicio de acompañamiento espiritual diario "
             "que te ayuda a conectar con tus emociones y transformar tu día a día.\n\n"
-            "🌱 *Básico* - $15.000/mes\n"
-            "   → 1 experiencia diaria\n"
-            "🌿 *Intermedio* - $25.000/mes\n"
-            "   → 3 experiencias diarias\n"
-            "🌳 *Premium* - $40.000/mes\n"
-            "   → 5 experiencias diarias\n\n"
+            f"🌱 *Básico* - ${prices['basico']:,}/mes\n"
+            f"   → 1 experiencia diaria\n"
+            f"🌿 *Intermedio* - ${prices['intermedio']:,}/mes\n"
+            f"   → 3 experiencias diarias\n"
+            f"🌳 *Premium* - ${prices['premium']:,}/mes\n"
+            f"   → 5 experiencias diarias\n\n"
             "Todos los planes incluyen:\n"
             "• Mensaje motivador diario (8hs)\n"
             "• Agradecimiento de cierre del día\n"
@@ -505,7 +733,36 @@ def send_welcome_intencionate(from_number):
     )
 
 
-# ── Mensajes programados (llamados por cron/management command) ──
+def show_estado_suscripcion(from_number, sub, session):
+    """Muestra el estado de la suscripción con opciones de acción."""
+    estado = "✅ Activa" if sub.activo else "❌ Inactiva"
+    ultimo_pago = sub.fecha_pago.strftime("%d/%m/%Y") if sub.fecha_pago else "—"
+    proximo_pago = (
+        (sub.fecha_pago + timedelta(days=30)).strftime("%d/%m/%Y")
+        if sub.fecha_pago else "—"
+    )
+
+    session["step"] = "int_menu_estado"
+    set_session(from_number, session)
+
+    send_interactive_buttons(
+        to=from_number,
+        body_text=(
+            f"📋 *Tu suscripción*\n\n"
+            f"Estado: {estado}\n"
+            f"Plan: {sub.tipo_plan.capitalize()}\n"
+            f"Último pago: {ultimo_pago}\n"
+            f"Próximo pago: {proximo_pago}"
+        ),
+        buttons=[
+            {"id": "int_abonar",       "title": "Abonar suscripción"},
+            {"id": "int_cambiar_plan", "title": "Cambiar plan"},
+            {"id": "int_finalizar",    "title": "Finalizar"},
+        ],
+    )
+
+
+# ── Mensajes programados ──────────────────────────────────────
 
 def send_daily_morning_message(sub: Intencionate):
     from .llm_chat import generate_daily_message
