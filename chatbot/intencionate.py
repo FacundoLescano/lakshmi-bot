@@ -697,7 +697,7 @@ def send_welcome_suscripto(from_number):
         to=from_number,
         body_text="Estoy para acompañarte.",
         buttons=[
-            {"id": "int_menu_experiencia", "title": "Intencionar experiencia"},
+            {"id": "int_menu_experiencia", "title": "Intencionar"},
             {"id": "int_menu_masaje",      "title": "Reservar masaje"},
             {"id": "int_menu_suscripcion", "title": "Mi suscripción"},
         ],
