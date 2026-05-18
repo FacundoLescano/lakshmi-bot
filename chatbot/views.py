@@ -18,8 +18,9 @@ from .availability import (
     suggest_alternatives,
 )
 from .conversation import clear_session, get_session, set_session
-from .models import ConfiguracionSistema, Intencionate, Memoria, Precio, Reserva, generate_voucher_code
+from .models import ConfiguracionSistema, Intencionate, LlegadaRegistrada, Memoria, Precio, Reserva, generate_voucher_code
 from . import intencionate as intencionate_bot
+from .llm_chat import generate_masaje_intention_response
 from .llm_router import route_message
 from .whatsapp import send_interactive_buttons, send_text_message
 
@@ -142,6 +143,17 @@ def process_message(from_number, msg_type, message):
         from django.db import close_old_connections
         close_old_connections()
 
+        # Detectar "Llegué" antes de cualquier otro manejo
+        if msg_type == "text":
+            raw_text = message.get("text", {}).get("body", "").strip()
+            if raw_text.lower() in ("llegué", "llegue"):
+                LlegadaRegistrada.objects.create(telefono=from_number)
+                send_text_message(
+                    to=from_number,
+                    text="¡Bienvenido/a! Te esperamos. 🙏",
+                )
+                return
+
         session = get_session(from_number)
 
         # Si ya tiene sesión activa, derivar al bot correcto
@@ -165,6 +177,9 @@ def process_message(from_number, msg_type, message):
                 return
             if button_id == "route_intencionate":
                 intencionate_bot.process(from_number, "text", {"text": {"body": "intencionate"}}, None)
+                return
+            if button_id == "intencionate_no_gracias":
+                send_text_message(to=from_number, text="¡Perfecto! Si en algún momento querés saber más, estamos acá. 🙏")
                 return
 
             # Botón de intencionate sin sesión (ej: suscribirse)
@@ -590,15 +605,10 @@ def handle_masaje_question(from_number, text, session):
         set_session(from_number, session)
         send_text_message(to=from_number, text=MASAJE_QUESTIONS[next_idx])
     else:
-        # Cuestionario terminado
-        send_text_message(
-            to=from_number,
-            text=(
-                "🧘 ¡Gracias por compartir! Vamos a personalizar tu experiencia "
-                "con aceites especiales para vos.\n\n"
-                "¡Te esperamos en Lakshmi!"
-            ),
-        )
+        # Cuestionario terminado — generar respuesta personalizada con LLM
+        answers = {k: session.get(k, "") for k in MASAJE_QUESTION_KEYS}
+        llm_response = generate_masaje_intention_response(answers)
+        send_text_message(to=from_number, text=llm_response)
         clear_session(from_number)
 
 
