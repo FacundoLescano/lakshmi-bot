@@ -139,6 +139,61 @@ def chat_response(user_message: str, user_info: dict, memories: list[str]) -> st
         return "Gracias por compartir. Tomate un momento para respirar y conectar con lo que sentís."
 
 
+def generate_masaje_intention_response(answers: dict) -> str:
+    lugar = answers.get('q_lugar', '')
+    fecha_nac = answers.get('q_fecha_nac', '')
+    atravesando = answers.get('q_atravesando', '')
+    preocupa = answers.get('q_preocupa', '')
+    sintiendo = answers.get('q_sintiendo', '')
+    cuerpo = answers.get('q_cuerpo', '')
+    energia = answers.get('q_energia', '')
+    deseo = answers.get('q_deseo', '')
+
+    system = (
+        "Sos una terapeuta de masajes con una profunda sensibilidad emocional y energética. "
+        "El cliente acaba de compartir cómo se siente antes de su sesión de masaje a través de un cuestionario de intención.\n\n"
+        "Tu respuesta debe:\n"
+        "- Reflejar y validar lo que el cliente compartió, haciéndolo sentir visto y contenido\n"
+        "- Conectar sus respuestas con la experiencia de masaje que va a recibir\n"
+        "- Usar un tono cálido, íntimo y empático, nunca clínico ni genérico\n"
+        "- Mencionar dónde siente la tensión en el cuerpo y cómo el masaje puede trabajar eso\n"
+        "- Cerrar con una frase de bienvenida y preparación para la sesión\n\n"
+        "No hables desde la razón. Hacelo sentir emociones. No uses listas ni pasos estructurados.\n\n"
+        "Usa datos astrológicos de forma implícita para dar contexto energético al mensaje "
+        f"(lugar de nacimiento: {lugar}, fecha de nacimiento: {fecha_nac}). No los menciones explícitamente.\n\n"
+        "La respuesta no debe superar los 1000 caracteres. Dale buena estructura, que no sea de corrido.\n\n"
+        "No ofrezcas seguir conversando al final."
+    )
+
+    user_content = (
+        f"Lo que está atravesando: {atravesando}\n"
+        f"Lo que más le mueve o preocupa: {preocupa}\n"
+        f"Cómo se siente: {sintiendo}\n"
+        f"Dónde lo siente en el cuerpo: {cuerpo}\n"
+        f"Cómo está su energía: {energia}\n"
+        f"Qué desearía que pase: {deseo}"
+    )
+
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=_get_model(),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=400,
+            temperature=0.85,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        logger.exception("Failed to generate masaje intention response")
+        return (
+            "Gracias por compartir todo eso. Lo que sentís es válido y lo vamos a sostener "
+            "con cada movimiento de la sesión. Te esperamos con todo el cuidado que merecés. 🙏"
+        )
+
+
 def generate_integration_message(user_info: dict, memories: list[str]) -> str:
     nombre = user_info.get('nombre', 'desconocido')
     lugar = user_info.get('lugar_nacimiento', 'desconocido')

@@ -128,6 +128,18 @@ class ConfiguracionSistema(models.Model):
             return default
 
 
+class LlegadaRegistrada(models.Model):
+    telefono = models.CharField(max_length=20, db_index=True)
+    llegada_at = models.DateTimeField(auto_now_add=True)
+    mensaje_enviado = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-llegada_at"]
+
+    def __str__(self):
+        return f"{self.telefono} — {self.llegada_at} (enviado: {self.mensaje_enviado})"
+
+
 class Precio(models.Model):
     duracion = models.PositiveIntegerField(unique=True)
     precio = models.PositiveIntegerField()
