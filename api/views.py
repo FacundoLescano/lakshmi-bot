@@ -91,6 +91,7 @@ class ReservaViewSet(viewsets.ModelViewSet):
             "nombre": reserva.nombre,
             "telefono": reserva.telefono,
             "horario": reserva.horario,
+            "recomendacion_aceites": reserva.recomendacion_aceites,
             "cuestionario": cuestionario,
         })
 

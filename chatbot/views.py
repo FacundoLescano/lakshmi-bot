@@ -19,6 +19,7 @@ from .availability import (
 )
 from .conversation import clear_session, get_session, set_session
 from .models import ConfiguracionSistema, Intencionate, LlegadaRegistrada, Memoria, Precio, Reserva, generate_voucher_code
+from .llm_chat import generate_oil_recommendation
 from .pdf_voucher import generate_voucher_pdf
 from .whatsapp import send_document_message, send_interactive_buttons, send_text_message, upload_media
 
@@ -606,7 +607,28 @@ def handle_masaje_question(from_number, text, session):
                 "¡Te esperamos en Lakshmi! 💆"
             ),
         )
+        # Generar recomendación de aceites en background y guardarla en la reserva
+        answers = {k: session.get(k, "") for k in MASAJE_QUESTION_KEYS}
+        reserva_ids = session.get("reserva_ids", [])
+        if reserva_ids:
+            threading.Thread(
+                target=_save_oil_recommendation,
+                args=(reserva_ids[0], answers),
+                daemon=True,
+            ).start()
         clear_session(from_number)
+
+
+def _save_oil_recommendation(reserva_id: int, answers: dict):
+    from django.db import close_old_connections
+    close_old_connections()
+    try:
+        recomendacion = generate_oil_recommendation(answers)
+        if recomendacion:
+            Reserva.objects.filter(id=reserva_id).update(recomendacion_aceites=recomendacion)
+            logger.info("Oil recommendation saved for reserva %s", reserva_id)
+    except Exception:
+        logger.exception("Failed to save oil recommendation for reserva %s", reserva_id)
 
 
 # ── Button handler ───────────────────────────────────────────
