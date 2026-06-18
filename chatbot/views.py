@@ -19,9 +19,6 @@ from .availability import (
 )
 from .conversation import clear_session, get_session, set_session
 from .models import ConfiguracionSistema, Intencionate, LlegadaRegistrada, Memoria, Precio, Reserva, generate_voucher_code
-from . import intencionate as intencionate_bot
-from .llm_chat import generate_masaje_intention_response
-from .llm_router import route_message
 from .pdf_voucher import generate_voucher_pdf
 from .whatsapp import send_document_message, send_interactive_buttons, send_text_message, upload_media
 
@@ -161,50 +158,22 @@ def process_message(from_number, msg_type, message):
 
         session = get_session(from_number)
 
-        # Si ya tiene sesión activa, derivar al bot correcto
+        # Si ya tiene sesión activa, derivar a lakshmi
         if session:
-            bot = session.get("bot")
-            if bot == "intencionate":
-                intencionate_bot.process(from_number, msg_type, message, session)
-                return
-            # Bot lakshmi (default)
             _dispatch_lakshmi(from_number, msg_type, message, session)
             return
 
-        # Sin sesión: manejar botones de routing primero
+        # Sin sesión: botones perdidos → reiniciar
         if msg_type == "interactive":
             interactive = message.get("interactive", {})
             button_reply = interactive.get("button_reply", {})
             button_id = button_reply.get("id", "")
-
-            if button_id == "route_lakshmi":
-                send_welcome(from_number)
-                return
-            if button_id == "route_intencionate":
-                intencionate_bot.process(from_number, "text", {"text": {"body": "intencionate"}}, None)
-                return
-            if button_id == "intencionate_no_gracias":
-                send_text_message(to=from_number, text="¡Perfecto! Si en algún momento querés saber más, estamos acá. 🙏")
-                return
-
-            # Botón de intencionate sin sesión (ej: suscribirse)
-            if button_id.startswith("int_") or button_id.startswith("sat_"):
-                intencionate_bot.handle_button(from_number, button_id, None)
-                return
-
-            # Cualquier otro botón sin sesión → bienvenida
+            # Cualquier botón sin sesión activa → bienvenida
             send_text_message(to=from_number, text="Se perdió la sesión. Empecemos de nuevo.")
-            send_interactive_buttons(
-                to=from_number,
-                body_text="¿En qué te podemos ayudar?",
-                buttons=[
-                    {"id": "route_lakshmi", "title": "Masajes Lakshmi"},
-                    {"id": "route_intencionate", "title": "Intencionate"},
-                ],
-            )
+            send_welcome(from_number)
             return
 
-        # Sin sesión: si es texto, usar LLM router para decidir
+        # Sin sesión: cualquier texto arranca lakshmi directamente
         if msg_type == "text":
             text = message.get("text", {}).get("body", "").strip()
 
@@ -213,28 +182,11 @@ def process_message(from_number, msg_type, message):
                 send_text_message(to=from_number, text="¡Gracias por contactarnos!")
                 return
 
-            # Admin access
             if text == ADMIN_CODE:
                 start_admin(from_number)
                 return
 
-            route = route_message(text)
-            logger.info("Router decision for %s: '%s' -> %s", from_number, text[:50], route)
-
-            if route == "lakshmi":
-                send_welcome(from_number)
-            elif route == "intencionate":
-                intencionate_bot.process(from_number, msg_type, message, None)
-            else:
-                # Saludo genérico — no se pudo determinar intención
-                send_interactive_buttons(
-                    to=from_number,
-                    body_text="¡Hola! ¿En qué te podemos ayudar?",
-                    buttons=[
-                        {"id": "route_lakshmi", "title": "Masajes Lakshmi"},
-                        {"id": "route_intencionate", "title": "Intencionate"},
-                    ],
-                )
+            send_welcome(from_number)
             return
 
         # Sin sesión y no es texto ni botón (ej: imagen suelta)
@@ -437,7 +389,24 @@ def handle_comprobante_reserva_received(from_number, session):
             "Piso 6"
         ),
     )
-    clear_session(from_number)
+    session["step"] = "awaiting_intencionar"
+    set_session(from_number, session)
+    ask_intencionar(from_number)
+
+
+def ask_intencionar(from_number):
+    send_interactive_buttons(
+        to=from_number,
+        body_text=(
+            "🙏 ¿Querés intencionar tu masaje?\n\n"
+            "Contame qué estás necesitando hoy. "
+            "Eso nos permite preparar tu sesión de manera más precisa."
+        ),
+        buttons=[
+            {"id": "intencionar_si", "title": "Sí, quiero"},
+            {"id": "intencionar_no", "title": "No, gracias"},
+        ],
+    )
 
 
 # ── Horario parsing & handling ───────────────────────────────
@@ -628,10 +597,15 @@ def handle_masaje_question(from_number, text, session):
         set_session(from_number, session)
         send_text_message(to=from_number, text=MASAJE_QUESTIONS[next_idx])
     else:
-        # Cuestionario terminado — generar respuesta personalizada con LLM
-        answers = {k: session.get(k, "") for k in MASAJE_QUESTION_KEYS}
-        llm_response = generate_masaje_intention_response(answers)
-        send_text_message(to=from_number, text=llm_response)
+        # Cuestionario terminado
+        send_text_message(
+            to=from_number,
+            text=(
+                "🙏 ¡Gracias por compartir!\n\n"
+                "Recibimos tu intención. Luego de tu sesión te enviaremos algo especial preparado para vos.\n\n"
+                "¡Te esperamos en Lakshmi! 💆"
+            ),
+        )
         clear_session(from_number)
 
 
@@ -686,20 +660,6 @@ def handle_button(from_number, button_id, session):
 
     if button_id == "admin_volver":
         start_admin(from_number)
-        return
-
-    # ── Router buttons (sin sesión previa) ──
-    if button_id == "route_lakshmi":
-        send_welcome(from_number)
-        return
-
-    if button_id == "route_intencionate":
-        intencionate_bot.process(from_number, "text", {"text": {"body": "intencionate"}}, None)
-        return
-
-    # ── Intencionate buttons (derivar al otro bot) ──
-    if button_id.startswith("int_") or button_id.startswith("sat_"):
-        intencionate_bot.handle_button(from_number, button_id, session)
         return
 
     # ── Main menu buttons (no session needed) ──
@@ -932,6 +892,19 @@ def handle_button(from_number, button_id, session):
             next_step = "awaiting_comprobante" if es_regalo else "awaiting_comprobante_reserva"
             session["step"] = next_step
             set_session(from_number, session)
+            return
+
+    # Intencionar masaje
+    if step == "awaiting_intencionar":
+        if button_id == "intencionar_si":
+            start_masaje_questionnaire(from_number, session)
+            return
+        if button_id == "intencionar_no":
+            send_text_message(
+                to=from_number,
+                text="¡Perfecto! Te esperamos en Lakshmi. 💆",
+            )
+            clear_session(from_number)
             return
 
 
