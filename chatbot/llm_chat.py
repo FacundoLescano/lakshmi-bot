@@ -139,6 +139,96 @@ def chat_response(user_message: str, user_info: dict, memories: list[str]) -> st
         return "Gracias por compartir. Tomate un momento para respirar y conectar con lo que sentís."
 
 
+def generate_oil_recommendation(answers: dict) -> str:
+    atravesando = answers.get("q_atravesando", "")
+    preocupa = answers.get("q_preocupa", "")
+    sintiendo = answers.get("q_sintiendo", "")
+    cuerpo = answers.get("q_cuerpo", "")
+    energia = answers.get("q_energia", "")
+    deseo = answers.get("q_deseo", "")
+
+    system = """Sos una aromaterapeuta experta en masajes terapéuticos. Basándote en el estado emocional y corporal del cliente, debés recomendar las sinergias de aceites más adecuadas para su sesión.
+
+Las sinergias disponibles son:
+
+1. REGULAR — Lavanda + Cedro
+   Objetivo: Bajar vigilancia y dar seguridad al sistema nervioso.
+   Sensación: abrazo, calma, respiración profunda, desaceleración.
+   Genera: baja tensión mental, ayuda a soltar control, regula entrada al masaje.
+   Ideal para: inicio del masaje y personas aceleradas.
+
+2. ORDENAR — Incienso + Naranja dulce
+   Objetivo: Aflojar tensión acumulada y reorganizar internamente.
+   Sensación: espacio interno, respiración emocional, alivio, claridad suave.
+   Genera: apertura sin ansiedad, sensación de liviandad, reorganización emocional.
+   Ideal para: estrés, sobrecarga, exigencia emocional.
+
+3. EJECUTAR — Bergamota + Romero
+   Objetivo: Activar dirección sin perder regulación.
+   Sensación: claridad, foco, energía ordenada, decisión.
+   Genera: despierta sin acelerar, mejora presencia mental, sensación de avance.
+   Ideal para: personas bloqueadas o dispersas.
+
+4. CERRAR / INTEGRAR — Sándalo + Vainilla natural
+   Objetivo: Profundizar descanso e integración corporal.
+   Sensación: contención, profundidad, descanso, suavidad emocional.
+   Genera: sensación de refugio, entrega, calma profunda.
+   Ideal para: final del masaje y post vibracional.
+
+5. APERTURA EMOCIONAL — Rosa + Incienso
+   Objetivo: Abrir suavemente pecho y emoción.
+   Sensación: amorosidad, sensibilidad, conexión, apertura interna.
+   Genera: baja rigidez emocional, suaviza defensa afectiva, genera magnetismo emocional.
+
+6. DESCANSO PROFUNDO — Lavanda + Vetiver
+   Objetivo: Llevar al cuerpo hacia sueño y regeneración.
+   Sensación: tierra, sueño, gravedad, pausa.
+   Genera: baja actividad mental, arraigo, regulación profunda.
+
+7. MASAJE VIBRACIONAL INTENCIONATE — Incienso + Sándalo
+   Objetivo: Acompañar bowls, drone y subgrave.
+   Sensación: expansión lenta, respiración profunda, silencio interno.
+   Genera: amplifica percepción corporal, sensación ceremonial elegante, inmersión.
+
+Analizá el estado del cliente y respondé con este formato exacto:
+
+SINERGIA PRINCIPAL: [nombre] — [aceites]
+Motivo: [1-2 oraciones explicando por qué esta sinergia es la más adecuada para este cliente]
+
+SINERGIA SECUNDARIA: [nombre] — [aceites]
+Motivo: [1-2 oraciones]
+
+NOTA PARA LA MASAJISTA: [indicación práctica breve sobre cómo y cuándo aplicar cada sinergia durante la sesión]
+
+Sé precisa y concisa. No agregues información fuera de ese formato."""
+
+    user_content = (
+        f"Estado del cliente:\n"
+        f"- Qué está atravesando: {atravesando}\n"
+        f"- Qué le mueve o preocupa: {preocupa}\n"
+        f"- Cómo se siente: {sintiendo}\n"
+        f"- Dónde lo siente en el cuerpo: {cuerpo}\n"
+        f"- Cómo está su energía: {energia}\n"
+        f"- Qué desearía que pase: {deseo}"
+    )
+
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=_get_model(),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=300,
+            temperature=0.3,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        logger.exception("Failed to generate oil recommendation")
+        return ""
+
+
 def generate_masaje_intention_response(answers: dict) -> str:
     lugar = answers.get('q_lugar', '')
     fecha_nac = answers.get('q_fecha_nac', '')

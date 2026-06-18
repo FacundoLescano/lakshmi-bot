@@ -39,6 +39,7 @@ class Reserva(models.Model):
     voucher = models.CharField(max_length=20, null=True, blank=True, unique=True)
     es_regalo = models.BooleanField(default=False)
     telefono = models.CharField(max_length=20, blank=True, default="")
+    recomendacion_aceites = models.TextField(blank=True, default="")
 
     class Meta:
         constraints = [
