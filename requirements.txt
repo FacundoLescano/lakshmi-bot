@@ -20,3 +20,4 @@ tzlocal==5.3.1
 urllib3==2.6.3
 openai>=1.0.0
 reportlab>=4.0.0
+pypdf>=4.0.0
