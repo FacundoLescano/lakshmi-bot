@@ -22,7 +22,8 @@ from .models import ConfiguracionSistema, Intencionate, LlegadaRegistrada, Memor
 from . import intencionate as intencionate_bot
 from .llm_chat import generate_masaje_intention_response
 from .llm_router import route_message
-from .whatsapp import send_interactive_buttons, send_text_message
+from .pdf_voucher import generate_voucher_pdf
+from .whatsapp import send_document_message, send_interactive_buttons, send_text_message, upload_media
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,10 @@ CBU_DEFAULT = "0000000000000000000000"
 
 def get_cbu():
     return ConfiguracionSistema.get("cbu", CBU_DEFAULT)
+
+
+def get_link_tarjeta(duracion: int) -> str:
+    return ConfiguracionSistema.get(f"link_tarjeta_{duracion}", f"https://link-pago-{duracion}min.com")
 
 DURACION_BUTTONS = [
     {"id": "dur_60", "title": "60 minutos"},
@@ -360,18 +365,19 @@ def handle_file(from_number, session):
 
 
 def handle_comprobante_received(from_number, session):
-    es_pareja = session.get("pareja", False)
-    duracion = session.get("duracion", 60)
+    es_pareja = session.get(“pareja”, False)
+    duracion = session.get(“duracion”, 60)
+    nombre = session.get(“nombre”, “”)
     voucher_code = generate_voucher_code()
 
     count = 2 if es_pareja else 1
     for _ in range(count):
         Reserva.objects.create(
-            nombre=session["nombre"],
+            nombre=nombre,
             es_pareja=es_pareja,
             duracion=duracion,
             horario=None,
-            sucursal="",
+            sucursal=””,
             camilla=None,
             voucher=generate_voucher_code() if _ > 0 else voucher_code,
             es_regalo=True,
@@ -381,16 +387,35 @@ def handle_comprobante_received(from_number, session):
     send_text_message(
         to=from_number,
         text=(
-            f"🎁 *Tenés un regalo especial...*\n\n"
-            f"Alguien pensó en vos y te regaló un momento de bienestar ✨\n\n"
-            f"💆 *Duración:* {duracion} minutos de relajación\n"
-            f"👥 *Modalidad:* {'Para compartir en pareja' if es_pareja else 'Para disfrutar de forma individual'}\n\n"
-            f"🌿 Este voucher es una invitación a desconectar, relajarte y regalarte un tiempo para vos.\n\n"
-            f"🎫 *Código:* {voucher_code}\n\n"
-            f"📲 Cuando quieras usarlo, solo tenés que escribirnos y seleccionar *“Tengo un voucher”* para coordinar tu turno.\n\n"
-            f"💫 Te esperamos en Lakshmi para vivir una experiencia única."
+            f”🎁 ¡Reserva de regalo confirmada!\n\n”
+            f”*Para:* {nombre}\n”
+            f”*Código:* {voucher_code}\n\n”
+            f”Te enviamos el voucher en PDF para que puedas compartirlo. 👇”
         ),
     )
+
+    # Generate and send PDF voucher
+    try:
+        pdf_bytes = generate_voucher_pdf(
+            para_nombre=nombre,
+            codigo=voucher_code,
+            duracion=duracion,
+            es_pareja=es_pareja,
+        )
+        media_id = upload_media(pdf_bytes, f”voucher_{voucher_code}.pdf”)
+        send_document_message(
+            to=from_number,
+            media_id=media_id,
+            filename=f”Voucher Lakshmi - {nombre}.pdf”,
+            caption=”🎁 Voucher de regalo Lakshmi Masajes”,
+        )
+    except Exception:
+        logger.exception(“Failed to generate/send voucher PDF for %s”, from_number)
+        send_text_message(
+            to=from_number,
+            text=”(No pudimos generar el PDF del voucher, pero el código ya está registrado.)”,
+        )
+
     clear_session(from_number)
 
 
@@ -412,9 +437,7 @@ def handle_comprobante_reserva_received(from_number, session):
             "Piso 6"
         ),
     )
-    session["step"] = "awaiting_intencionar"
-    set_session(from_number, session)
-    ask_intencionar(from_number)
+    clear_session(from_number)
 
 
 # ── Horario parsing & handling ───────────────────────────────
@@ -872,17 +895,43 @@ def handle_button(from_number, button_id, session):
                 )
             return
 
-    # Intencionar masaje
-    if step == "awaiting_intencionar":
-        if button_id == "intencionar_si":
-            start_masaje_questionnaire(from_number, session)
-            return
-        if button_id == "intencionar_no":
+    # Método de pago
+    if step == "awaiting_metodo_pago":
+        es_regalo = session.get("es_regalo", False)
+        duracion = session.get("duracion", 60)
+        precio = get_price(session)
+        adelanto = precio if es_regalo else precio // 2
+
+        if button_id == "pago_transferencia":
             send_text_message(
                 to=from_number,
-                text="¡Perfecto! Te esperamos en Lakshmi. 💆",
+                text=(
+                    f"🏦 *Transferencia bancaria*\n\n"
+                    f"Monto: ${adelanto:,}\n\n"
+                    f"CBU: {get_cbu()}\n"
+                    f"Titular: Lakshmi Masajes\n\n"
+                    f"Envianos el comprobante por este chat. 📎"
+                ),
             )
-            clear_session(from_number)
+            next_step = "awaiting_comprobante" if es_regalo else "awaiting_comprobante_reserva"
+            session["step"] = next_step
+            set_session(from_number, session)
+            return
+
+        if button_id == "pago_tarjeta":
+            link = get_link_tarjeta(duracion)
+            send_text_message(
+                to=from_number,
+                text=(
+                    f"💳 *Pago con tarjeta*\n\n"
+                    f"Monto: ${adelanto:,}\n\n"
+                    f"Ingresá al siguiente link para completar el pago:\n{link}\n\n"
+                    f"Una vez realizado, envianos el comprobante por este chat. 📎"
+                ),
+            )
+            next_step = "awaiting_comprobante" if es_regalo else "awaiting_comprobante_reserva"
+            session["step"] = next_step
+            set_session(from_number, session)
             return
 
 
@@ -1147,15 +1196,18 @@ def get_price(session):
 
 def send_payment_info(from_number, session):
     precio = get_price(session)
-    send_text_message(
+    session["step"] = "awaiting_metodo_pago"
+    set_session(from_number, session)
+    send_interactive_buttons(
         to=from_number,
-        text=(
+        body_text=(
             f"💰 El precio total es ${precio:,}\n\n"
-            f"Realizá la transferencia al siguiente CBU:\n\n"
-            f"🏦 CBU: {get_cbu()}\n"
-            f"👤 Titular: Lakshmi Masajes\n\n"
-            f"Envianos el comprobante de transferencia por este mismo chat."
+            "¿Cómo querés abonar?"
         ),
+        buttons=[
+            {"id": "pago_transferencia", "title": "Transferencia"},
+            {"id": "pago_tarjeta", "title": "Crédito / Débito"},
+        ],
     )
 
 
@@ -1229,10 +1281,7 @@ def save_reserva(from_number, session):
                 f"¡Te esperamos en Lakshmi!"
             ),
         )
-        # Offer intencionar
-        session["step"] = "awaiting_intencionar"
-        set_session(from_number, session)
-        ask_intencionar(from_number)
+        clear_session(from_number)
 
     else:
         # Normal reservation
@@ -1256,32 +1305,23 @@ def save_reserva(from_number, session):
             to=from_number,
             text=(
                 f"✅ ¡Reserva confirmada!\n\n"
-                f"Para completar tu reserva, realizá una transferencia de ${adelanto:,} "
-                f"al siguiente CBU:\n\n"
-                f"🏦 CBU: {get_cbu()}\n"
-                f"👤 Titular: Lakshmi Masajes\n\n"
-                f"Envianos el comprobante por este mismo chat. ¡Te esperamos!"
+                f"📅 {horario.strftime('%A %d/%m a las %H:%Mhs')}\n"
+                f"💆 {duracion} minutos\n\n"
+                f"Para completar tu reserva necesitamos un adelanto de ${adelanto:,}."
             ),
         )
 
-        session["step"] = "awaiting_comprobante_reserva"
+        session["step"] = "awaiting_metodo_pago"
         set_session(from_number, session)
+        send_interactive_buttons(
+            to=from_number,
+            body_text="¿Cómo querés abonar el adelanto?",
+            buttons=[
+                {"id": "pago_transferencia", "title": "Transferencia"},
+                {"id": "pago_tarjeta", "title": "Crédito / Débito"},
+            ],
+        )
 
-
-def ask_intencionar(from_number):
-    send_interactive_buttons(
-        to=from_number,
-        body_text=(
-            "🙏 ¿Querés intencionar tu masaje?\n\n"
-            "Entrá un momento en vos"
-            "y contame qué estás necesitando hoy.\n\n"
-            "Eso nos permite preparar tu sesión de manera más precisa."
-        ),
-        buttons=[
-            {"id": "intencionar_si", "title": "Sí, quiero"},
-            {"id": "intencionar_no", "title": "No, gracias"},
-        ],
-    )
 
 
 def reprompt(from_number, session):
