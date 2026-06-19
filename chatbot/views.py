@@ -33,8 +33,25 @@ def get_cbu():
     return ConfiguracionSistema.get("cbu", CBU_DEFAULT)
 
 
-def get_link_tarjeta(duracion: int) -> str:
-    return ConfiguracionSistema.get(f"link_tarjeta_{duracion}", f"https://link-pago-{duracion}min.com")
+_LINKS_TARJETA = {
+    # (es_regalo, es_pareja, duracion): link
+    (False, False, 60):  "https://mpago.la/1Fn3CSE",
+    (False, False, 90):  "https://mpago.la/1HoCqkU",
+    (False, False, 120): "https://mpago.la/13M7T2N",
+    (False, True,  60):  "https://mpago.la/1Fn3CSE",  # pareja 50% usa mismo link que individual
+    (False, True,  90):  "https://mpago.la/1HoCqkU",
+    (False, True,  120): "https://mpago.la/13M7T2N",
+    (True,  False, 60):  "https://mpago.la/1DHeAhG",
+    (True,  False, 90):  "https://mpago.la/1YwcJeM",
+    (True,  False, 120): "https://mpago.la/1PMh1KU",
+    (True,  True,  60):  "https://mpago.la/1cCLjmh",
+    (True,  True,  90):  "https://mpago.la/1qqHV8y",
+    (True,  True,  120): "https://mpago.la/2nWDuMb",
+}
+
+
+def get_link_tarjeta(duracion: int, es_regalo: bool, es_pareja: bool) -> str:
+    return _LINKS_TARJETA.get((es_regalo, es_pareja, duracion), "")
 
 DURACION_BUTTONS = [
     {"id": "dur_60", "title": "60 minutos"},
@@ -901,7 +918,7 @@ def handle_button(from_number, button_id, session):
             return
 
         if button_id == "pago_tarjeta":
-            link = get_link_tarjeta(duracion)
+            link = get_link_tarjeta(duracion, es_regalo, session.get("pareja", False))
             send_text_message(
                 to=from_number,
                 text=(
