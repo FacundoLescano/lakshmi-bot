@@ -1,5 +1,5 @@
 """
-Send Intencionate promo message to users who sent "Llegué" 2.5 hours ago.
+Send AI-generated post-session message to users who sent "Llegué" 2.5 hours ago.
 Run via cron every 5 minutes:
     */5 * * * * cd /path/to/project && python manage.py send_llegada_messages
 """
@@ -8,21 +8,32 @@ from datetime import datetime, timedelta
 
 from django.core.management.base import BaseCommand
 
-from chatbot.models import LlegadaRegistrada
-from chatbot.whatsapp import send_interactive_buttons
+from chatbot.llm_chat import generate_post_session_message
+from chatbot.models import LlegadaRegistrada, Memoria
+from chatbot.whatsapp import send_text_message
 
 logger = logging.getLogger(__name__)
 
-PROMO_TEXT = (
-    "¿Cómo te sentiste después de la sesión? 🌿\n\n"
-    "En Lakshmi también tenemos *Intencionate*, un servicio de acompañamiento emocional diario "
-    "donde recibís mensajes personalizados basados en tu energía y tu historia.\n\n"
-    "Es una forma de continuar el trabajo que empezaste hoy, desde casa y a tu ritmo."
-)
+# Prefijos internos que no son respuestas emocionales del cliente
+_PREFIJOS_INTERNOS = ("[lugar]", "[fecha_nac]", "[aceites]")
+
+
+def _get_recent_memories(telefono: str, limit: int = 20) -> list[str]:
+    """Return the last `limit` emotional memories for this user, excluding internal prefixes."""
+    memorias = (
+        Memoria.objects
+        .filter(id_user=telefono)
+        .exclude(context__startswith="[lugar]")
+        .exclude(context__startswith="[fecha_nac]")
+        .exclude(context__startswith="[aceites]")
+        .order_by("-created_at")[:limit]
+    )
+    # Return in chronological order so the LLM reads them naturally
+    return [m.context for m in reversed(list(memorias))]
 
 
 class Command(BaseCommand):
-    help = "Send Intencionate promo to users who arrived 2.5 hours ago"
+    help = "Send AI post-session message to users who arrived 2.5 hours ago"
 
     def handle(self, *args, **options):
         now = datetime.now()
@@ -38,19 +49,16 @@ class Command(BaseCommand):
 
         for llegada in pending:
             try:
-                send_interactive_buttons(
-                    to=llegada.telefono,
-                    body_text=PROMO_TEXT,
-                    buttons=[
-                        {"id": "route_intencionate", "title": "Quiero saber más"},
-                        {"id": "intencionate_no_gracias", "title": "No, gracias"},
-                    ],
-                )
+                memories = _get_recent_memories(llegada.telefono)
+                message = generate_post_session_message(memories)
+
+                send_text_message(to=llegada.telefono, text=message)
+
                 llegada.mensaje_enviado = True
                 llegada.save(update_fields=["mensaje_enviado"])
                 count += 1
-                self.stdout.write(f"Sent to {llegada.telefono}")
+                self.stdout.write(f"Sent post-session message to {llegada.telefono}")
             except Exception:
-                logger.exception("Failed to send llegada promo to %s", llegada.telefono)
+                logger.exception("Failed to send post-session message to %s", llegada.telefono)
 
-        self.stdout.write(self.style.SUCCESS(f"Sent {count} llegada promo messages"))
+        self.stdout.write(self.style.SUCCESS(f"Sent {count} post-session messages"))

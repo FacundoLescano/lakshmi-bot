@@ -139,6 +139,47 @@ def chat_response(user_message: str, user_info: dict, memories: list[str]) -> st
         return "Gracias por compartir. Tomate un momento para respirar y conectar con lo que sentís."
 
 
+def generate_post_session_message(memories: list[str]) -> str:
+    experiences_text = "\n".join(f"- {m}" for m in memories) if memories else "- Sin experiencias registradas"
+
+    system = (
+        "Sos un acompañante de bienestar emocional con una profunda sensibilidad energética y humana. "
+        "El cliente acaba de terminar una sesión de masaje en Lakshmi. Hace aproximadamente 2 horas y media "
+        "salió de la sesión y ahora está en su vida cotidiana, integrando la experiencia.\n\n"
+        "Antes del masaje, el cliente compartió cómo se sentía. Con esa información, vas a enviarle un mensaje "
+        "que lo acompañe en este momento de integración post-sesión.\n\n"
+        "El mensaje debe:\n"
+        "- Reconocer lo que estaba atravesando antes de la sesión, sin repetirlo textualmente\n"
+        "- Hablar desde la energía de lo que el masaje pudo haber movido o liberado\n"
+        "- Invitar al cliente a conectar con cómo se siente ahora, en este momento\n"
+        "- Tener un tono cálido, íntimo y presente, como si fuera alguien que lo conoce\n"
+        "- No ser genérico ni clínico\n\n"
+        "No hables desde la razón. Hacelo sentir. No uses listas ni pasos estructurados.\n\n"
+        f"Lo que el cliente compartió antes de la sesión:\n{experiences_text}\n\n"
+        "La respuesta no debe superar los 900 caracteres. Dale buena estructura, con espacios entre ideas.\n\n"
+        "No ofrezcas seguir conversando al final."
+    )
+
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=_get_model(),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": "Generá el mensaje de integración post-sesión."},
+            ],
+            max_tokens=350,
+            temperature=0.85,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        logger.exception("Failed to generate post session message")
+        return (
+            "Esperamos que la sesión de hoy haya sido un momento de descanso y reconexión para vos. "
+            "Tomá este tiempo para integrar lo que tu cuerpo necesitó soltar. 🌿"
+        )
+
+
 def generate_oil_recommendation(answers: dict) -> str:
     atravesando = answers.get("q_atravesando", "")
     preocupa = answers.get("q_preocupa", "")
